@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 import matplotlib
@@ -111,8 +111,19 @@ class MainWindow(QMainWindow):
         # Caches, keyed by id, so re-plotting after a checkbox change never
         # needs a fresh network call.
         self._drivers_by_session: dict[int, list[dict]] = {}
+        self._sessions_by_meeting: dict[int, list[dict]] = {}
         self._laps_by_session: dict[int, list[dict]] = {}
         self._telemetry_cache: dict[tuple[int, int, int], list[dict]] = {}
+
+        # Set just before auto-selecting a meeting at startup so the
+        # session cascade picks the specific session already confirmed to
+        # have data, instead of defaulting to the earliest session.
+        self._pending_startup_session_key: Optional[int] = None
+
+        # Bumped on every user-driven year change, so a slow startup
+        # auto-detection probe that's still running can tell it's stale
+        # and avoid clobbering a selection the user has since made.
+        self._year_selection_generation = 0
 
         # Keeps in-flight Worker objects alive: QRunnable/QObject instances
         # with no Qt parent are only kept alive by Python's own refcounting,
@@ -127,6 +138,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._populate_years()
+        self._autoselect_startup_defaults()
 
     # ---- UI construction -------------------------------------------------
 
@@ -343,6 +355,7 @@ class MainWindow(QMainWindow):
         self.year_combo.blockSignals(False)
 
     def _on_year_changed(self) -> None:
+        self._year_selection_generation += 1
         year = self.year_combo.currentData()
         self._clear_combo(self.meeting_combo, "-- Select Grand Prix --")
         self._clear_combo(self.session_combo, "-- Select session --")
@@ -356,13 +369,13 @@ class MainWindow(QMainWindow):
             api.get_meetings, self._populate_meetings, f"Loading {year} calendar...", year=year
         )
 
-    def _populate_meetings(self, meetings: list[dict]) -> None:
+    def _populate_meetings(self, meetings: list[dict], auto_select: bool = True) -> None:
         meetings_sorted = sorted(meetings, key=lambda m: m.get("date_start") or "")
         self.meeting_combo.blockSignals(True)
         for meeting in meetings_sorted:
             self.meeting_combo.addItem(meeting["meeting_name"], meeting["meeting_key"])
         self.meeting_combo.blockSignals(False)
-        if meetings_sorted:
+        if meetings_sorted and auto_select:
             self.meeting_combo.setCurrentIndex(1)  # trigger _on_meeting_changed
 
     def _on_meeting_changed(self) -> None:
@@ -374,17 +387,41 @@ class MainWindow(QMainWindow):
         self.telemetry_plot_button.setEnabled(False)
         if meeting_key is None:
             return
-        self._run_async(
-            api.get_sessions, self._populate_sessions, "Loading sessions...", meeting_key=meeting_key
-        )
 
-    def _populate_sessions(self, sessions: list[dict]) -> None:
+        if meeting_key in self._sessions_by_meeting:
+            self._populate_sessions(
+                self._sessions_by_meeting[meeting_key], self._consume_pending_startup_session()
+            )
+        else:
+            self._run_async(
+                api.get_sessions,
+                lambda sessions, mk=meeting_key: self._on_sessions_cached(mk, sessions),
+                "Loading sessions...",
+                meeting_key=meeting_key,
+            )
+
+    def _on_sessions_cached(self, meeting_key: int, sessions: list[dict]) -> None:
+        self._sessions_by_meeting[meeting_key] = sessions
+        if self.meeting_combo.currentData() == meeting_key:
+            self._populate_sessions(sessions, self._consume_pending_startup_session())
+
+    def _consume_pending_startup_session(self) -> Optional[int]:
+        session_key = self._pending_startup_session_key
+        self._pending_startup_session_key = None
+        return session_key
+
+    def _populate_sessions(self, sessions: list[dict], select_session_key: Optional[int] = None) -> None:
         sessions_sorted = sorted(sessions, key=lambda s: s.get("date_start") or "")
         self.session_combo.blockSignals(True)
         for session in sessions_sorted:
             self.session_combo.addItem(session["session_name"], session["session_key"])
         self.session_combo.blockSignals(False)
-        if sessions_sorted:
+        if not sessions_sorted:
+            return
+        if select_session_key is not None:
+            index = self.session_combo.findData(select_session_key)
+            self.session_combo.setCurrentIndex(index if index != -1 else 1)
+        else:
             self.session_combo.setCurrentIndex(1)  # trigger _on_session_changed
 
     def _on_session_changed(self) -> None:
@@ -439,6 +476,137 @@ class MainWindow(QMainWindow):
         if lap_numbers:
             self.lap_combo.setCurrentIndex(1)
         self.telemetry_plot_button.setEnabled(bool(lap_numbers))
+
+    # ---- Startup default: current year + most recent GP with data --------
+
+    def _autoselect_startup_defaults(self) -> None:
+        current_year = datetime.now().year
+        generation = self._year_selection_generation
+        self._clear_combo(self.meeting_combo, "-- Select Grand Prix --")
+        self._clear_combo(self.session_combo, "-- Select session --")
+        self._clear_combo(self.lap_combo, "-- Select session first --")
+        self._set_year_combo_silently(current_year)
+        self._run_async(
+            api.get_meetings,
+            lambda meetings, y=current_year, g=generation: self._on_startup_meetings(y, meetings, g),
+            f"Loading {current_year} calendar...",
+            year=current_year,
+        )
+
+    def _set_year_combo_silently(self, year: int) -> None:
+        index = self.year_combo.findData(year)
+        if index == -1:
+            return
+        self.year_combo.blockSignals(True)
+        self.year_combo.setCurrentIndex(index)
+        self.year_combo.blockSignals(False)
+
+    def _on_startup_meetings(self, year: int, meetings: list[dict], generation: int) -> None:
+        if generation != self._year_selection_generation:
+            return  # the user picked a year themselves before this arrived
+
+        now = datetime.now(timezone.utc)
+        past_meetings = [
+            m for m in meetings
+            if not m.get("is_cancelled")
+            and m.get("date_start")
+            and datetime.fromisoformat(m["date_start"]) <= now
+        ]
+
+        if not past_meetings and year > FIRST_HISTORICAL_YEAR:
+            # Nothing has happened yet this year (e.g. before the season
+            # starts) - fall back to last year's most recent meeting.
+            self._set_year_combo_silently(year - 1)
+            self._run_async(
+                api.get_meetings,
+                lambda meetings, y=year - 1, g=generation: self._on_startup_meetings(y, meetings, g),
+                f"Loading {year - 1} calendar...",
+                year=year - 1,
+            )
+            return
+
+        self._populate_meetings(meetings, auto_select=False)
+
+        if not past_meetings:
+            self.status_bar.clearMessage()
+            return
+
+        past_meetings.sort(key=lambda m: m["date_start"], reverse=True)
+        self._probe_meetings_for_data(past_meetings, generation)
+
+    def _probe_meetings_for_data(self, candidates: list[dict], generation: int, index: int = 0) -> None:
+        if generation != self._year_selection_generation:
+            return
+
+        if index >= len(candidates):
+            # None of this year's past meetings have queryable session
+            # data yet; leave the year/meeting pickers on their placeholders.
+            self.status_bar.clearMessage()
+            return
+
+        meeting = candidates[index]
+        self._run_async(
+            api.get_sessions,
+            lambda sessions, m=meeting, c=candidates, i=index, g=generation: self._probe_sessions_for_data(
+                c, i, m, sorted(sessions, key=lambda s: s.get("date_start") or "", reverse=True), g
+            ),
+            f"Checking {meeting['meeting_name']}...",
+            meeting_key=meeting["meeting_key"],
+        )
+
+    def _probe_sessions_for_data(
+        self, candidates: list[dict], meeting_index: int, meeting: dict, sessions_desc: list[dict], generation: int
+    ) -> None:
+        if generation != self._year_selection_generation:
+            return
+
+        if not sessions_desc:
+            self._probe_meetings_for_data(candidates, generation, meeting_index + 1)
+            return
+
+        session, remaining = sessions_desc[0], sessions_desc[1:]
+        self._run_async(
+            api.get_drivers,
+            lambda drivers, m=meeting, s=session, c=candidates, i=meeting_index, r=remaining, full=sessions_desc, g=generation:
+                self._on_session_probe_result(c, i, m, full, s, r, drivers, g),
+            f"Checking {meeting['meeting_name']} - {session['session_name']}...",
+            session_key=session["session_key"],
+        )
+
+    def _on_session_probe_result(
+        self,
+        candidates: list[dict],
+        meeting_index: int,
+        meeting: dict,
+        all_sessions: list[dict],
+        session: dict,
+        remaining_sessions: list[dict],
+        drivers: list[dict],
+        generation: int,
+    ) -> None:
+        if generation != self._year_selection_generation:
+            return
+
+        if drivers:
+            self._drivers_by_session[session["session_key"]] = drivers
+            self._apply_startup_meeting_selection(meeting, all_sessions, session["session_key"], generation)
+        elif remaining_sessions:
+            self._probe_sessions_for_data(candidates, meeting_index, meeting, remaining_sessions, generation)
+        else:
+            self._probe_meetings_for_data(candidates, generation, meeting_index + 1)
+
+    def _apply_startup_meeting_selection(
+        self, meeting: dict, sessions: list[dict], session_key: int, generation: int
+    ) -> None:
+        if generation != self._year_selection_generation:
+            return
+
+        self._sessions_by_meeting[meeting["meeting_key"]] = sessions
+        self._pending_startup_session_key = session_key
+        self.status_bar.clearMessage()
+        index = self.meeting_combo.findData(meeting["meeting_key"])
+        if index != -1:
+            self.meeting_combo.setCurrentIndex(index)  # triggers _on_meeting_changed
 
     def _populate_drivers(self, session_key: int, drivers: list[dict]) -> None:
         self._drivers_by_session[session_key] = drivers
