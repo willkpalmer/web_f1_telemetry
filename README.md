@@ -9,9 +9,15 @@ lap-by-lap for whichever drivers you pick.
 1. Pick a **Year**, then a **Grand Prix**, then a **Session** (Practice,
    Qualifying, Sprint, Race, ...).
 2. Tick the drivers/cars you want to compare.
-3. Pick a **Metric**: Lap Time, Sector 1/2/3 time, or Speed Trap.
-4. Click **Plot** to see it graphed lap-by-lap, one coloured line per car
-   (using each team's real colour).
+3. Choose a tab:
+   - **Lap Summary** — pick a **Metric** (Lap Time, Sector 1/2/3 time, or
+     Speed Trap) and click **Plot** to see it graphed lap-by-lap, one
+     coloured line per car (using each team's real colour).
+   - **Car Telemetry** — pick a single **Lap**, tick the channels you want
+     (Speed, Throttle, Brake, Gear, RPM, DRS), and click **Plot Telemetry**
+     to compare cars' traces through that lap, aligned on elapsed time
+     since the lap started. Note: OpenF1's free tier has no steering-angle
+     channel, so that's the one thing you can't compare here.
 
 Data only goes back to the 2023 season (that's what OpenF1 provides for
 free without authentication) — the year list starts there.
@@ -46,12 +52,12 @@ before `python main.py`.
 
 ## Project layout
 
-- `main.py` — the PySide6 GUI: dropdowns, driver checklist, and the
-  embedded matplotlib chart.
+- `main.py` — the PySide6 GUI: dropdowns, driver checklist, and the two
+  tabs' matplotlib charts.
 - `openf1_client.py` — a thin wrapper around the OpenF1 REST endpoints
-  (`meetings`, `sessions`, `drivers`, `laps`). Kept separate so you can
-  reuse it or extend it (e.g. add `stints` or `car_data`) without
-  touching the UI code.
+  (`meetings`, `sessions`, `drivers`, `laps`, `car_data`). Kept separate
+  so you can reuse it or extend it (e.g. add `stints`) without touching
+  the UI code.
 - `requirements.txt` — the three packages the app needs.
 
 ## Notes and things worth knowing
@@ -65,10 +71,15 @@ before `python main.py`.
   there).
 - **Caching**: once a session's lap data has been downloaded, switching
   drivers or metrics and clicking Plot again re-draws instantly — no new
-  network request.
+  network request. Telemetry is cached per (session, driver, lap) too, so
+  ticking a different channel for a lap you've already plotted doesn't
+  re-fetch anything.
+- **Telemetry lap selector**: only laps with a recorded start time and
+  duration show up, since those two fields are what's used to carve a
+  time window out of `/car_data` for that lap.
+- **Rate limits**: OpenF1's free tier will occasionally respond with "too
+  many requests" if you plot telemetry for a lot of drivers in quick
+  succession — just wait a few seconds and click Plot again.
 - **Extending it**: the `/laps` endpoint also has `i1_speed`, `i2_speed`,
   and the sector "mini-sector" colour segments if you want to add more
-  metrics. The much higher-resolution `/car_data` endpoint (~3.7 Hz
-  throttle/brake/RPM/speed/gear) is a natural next step if you want true
-  telemetry traces rather than one point per lap — it just needs its own
-  time-based x-axis instead of lap number.
+  Lap Summary metrics.

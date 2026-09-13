@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import sys
 import traceback
-from datetime import datetime
-from typing import Any, Callable
+from datetime import datetime, timedelta
+from typing import Any, Callable, Optional
 
 import matplotlib
 matplotlib.use("QtAgg")  # works with both PyQt and PySide bindings
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +51,18 @@ METRICS: dict[str, tuple[str, str]] = {
     "Sector 2": ("duration_sector_2", "Sector 2 time (s)"),
     "Sector 3": ("duration_sector_3", "Sector 3 time (s)"),
     "Speed Trap": ("st_speed", "Speed (km/h)"),
+}
+
+# Display name -> (JSON field on the /car_data object, y-axis label)
+# OpenF1's free telemetry has no steering-angle channel - this is everything
+# it exposes.
+TELEMETRY_CHANNELS: dict[str, tuple[str, str]] = {
+    "Speed": ("speed", "Speed (km/h)"),
+    "Throttle": ("throttle", "Throttle (%)"),
+    "Brake": ("brake", "Brake (%)"),
+    "Gear": ("n_gear", "Gear"),
+    "RPM": ("rpm", "Engine RPM"),
+    "DRS": ("drs", "DRS (raw status code)"),
 }
 
 FIRST_HISTORICAL_YEAR = 2023
@@ -91,7 +104,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("OpenF1 Lap Viewer")
-        self.resize(1150, 700)
+        self.resize(1250, 750)
 
         self.thread_pool = QThreadPool.globalInstance()
 
@@ -99,6 +112,7 @@ class MainWindow(QMainWindow):
         # needs a fresh network call.
         self._drivers_by_session: dict[int, list[dict]] = {}
         self._laps_by_session: dict[int, list[dict]] = {}
+        self._telemetry_cache: dict[tuple[int, int, int], list[dict]] = {}
 
         # Keeps in-flight Worker objects alive: QRunnable/QObject instances
         # with no Qt parent are only kept alive by Python's own refcounting,
@@ -106,6 +120,10 @@ class MainWindow(QMainWindow):
         # its background thread is still running, and emitting its signal
         # afterwards raises "Signal source has been deleted".
         self._active_workers: list[Worker] = []
+
+        # State for the telemetry fetch-then-draw join (see _plot_telemetry).
+        self._pending_telemetry: Optional[dict[str, Any]] = None
+        self._telemetry_fetch_remaining = 0
 
         self._build_ui()
         self._populate_years()
@@ -120,16 +138,22 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         root_layout.addWidget(splitter)
 
-        splitter.addWidget(self._build_control_panel())
-        splitter.addWidget(self._build_plot_panel())
+        splitter.addWidget(self._build_selection_panel())
+
+        tabs = QTabWidget()
+        tabs.addTab(self._build_lap_summary_tab(), "Lap Summary")
+        tabs.addTab(self._build_telemetry_tab(), "Car Telemetry")
+        splitter.addWidget(tabs)
+
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([300, 850])
+        splitter.setSizes([300, 950])
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
-    def _build_control_panel(self) -> QWidget:
+    def _build_selection_panel(self) -> QWidget:
+        """Year / Grand Prix / Session / Drivers - shared by both tabs."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -162,39 +186,91 @@ class MainWindow(QMainWindow):
         select_row.addWidget(select_none_btn)
         layout.addLayout(select_row)
 
-        layout.addWidget(QLabel("<b>Metric</b>"))
+        return panel
+
+    def _build_lap_summary_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        controls_layout.addWidget(QLabel("<b>Metric</b>"))
         self.metric_combo = QComboBox()
         self.metric_combo.addItems(list(METRICS.keys()))
-        layout.addWidget(self.metric_combo)
+        controls_layout.addWidget(self.metric_combo)
 
         self.exclude_pit_laps_check = QCheckBox("Exclude pit in/out laps")
         self.exclude_pit_laps_check.setChecked(True)
-        layout.addWidget(self.exclude_pit_laps_check)
+        controls_layout.addWidget(self.exclude_pit_laps_check)
 
         self.invert_time_axis_check = QCheckBox("Faster laps plotted higher")
-        layout.addWidget(self.invert_time_axis_check)
+        controls_layout.addWidget(self.invert_time_axis_check)
 
         self.plot_button = QPushButton("Plot")
         self.plot_button.setEnabled(False)
         self.plot_button.clicked.connect(self._on_plot_clicked)
-        layout.addWidget(self.plot_button)
+        controls_layout.addWidget(self.plot_button)
 
-        layout.addStretch(1)
-        return panel
+        controls_layout.addStretch(1)
+        controls.setFixedWidth(180)
+        layout.addWidget(controls)
 
-    def _build_plot_panel(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-
+        plot_panel = QWidget()
+        plot_layout = QVBoxLayout(plot_panel)
         self.figure = Figure(figsize=(7, 5))
         self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, panel)
+        self.toolbar = NavigationToolbar(self.canvas, plot_panel)
         self.ax = self.figure.add_subplot(111)
         self._reset_plot_placeholder()
+        plot_layout.addWidget(self.toolbar)
+        plot_layout.addWidget(self.canvas, stretch=1)
+        layout.addWidget(plot_panel, stretch=1)
 
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas, stretch=1)
-        return panel
+        return tab
+
+    def _build_telemetry_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        controls_layout.addWidget(QLabel("<b>Lap</b>"))
+        self.lap_combo = QComboBox()
+        self.lap_combo.addItem("-- Select session first --", None)
+        controls_layout.addWidget(self.lap_combo)
+
+        controls_layout.addWidget(QLabel("<b>Channels</b>"))
+        self.channel_checks: dict[str, QCheckBox] = {}
+        for name in TELEMETRY_CHANNELS:
+            check = QCheckBox(name)
+            check.setChecked(name in ("Speed", "Throttle", "Brake", "Gear"))
+            controls_layout.addWidget(check)
+            self.channel_checks[name] = check
+
+        self.telemetry_plot_button = QPushButton("Plot Telemetry")
+        self.telemetry_plot_button.setEnabled(False)
+        self.telemetry_plot_button.clicked.connect(self._on_telemetry_plot_clicked)
+        controls_layout.addWidget(self.telemetry_plot_button)
+
+        controls_layout.addStretch(1)
+        controls.setFixedWidth(180)
+        layout.addWidget(controls)
+
+        plot_panel = QWidget()
+        plot_layout = QVBoxLayout(plot_panel)
+        self.telemetry_figure = Figure(figsize=(7, 5))
+        self.telemetry_canvas = FigureCanvas(self.telemetry_figure)
+        self.telemetry_toolbar = NavigationToolbar(self.telemetry_canvas, plot_panel)
+        self._reset_telemetry_placeholder()
+        plot_layout.addWidget(self.telemetry_toolbar)
+        plot_layout.addWidget(self.telemetry_canvas, stretch=1)
+        layout.addWidget(plot_panel, stretch=1)
+
+        return tab
 
     def _reset_plot_placeholder(self) -> None:
         self.ax.clear()
@@ -206,7 +282,18 @@ class MainWindow(QMainWindow):
         self.ax.set_yticks([])
         self.canvas.draw_idle()
 
-    # ---- Generic async helper --------------------------------------------
+    def _reset_telemetry_placeholder(self) -> None:
+        self.telemetry_figure.clear()
+        ax = self.telemetry_figure.add_subplot(111)
+        ax.text(
+            0.5, 0.5, "Select a session, lap, drivers and channels,\nthen click Plot Telemetry",
+            ha="center", va="center", transform=ax.transAxes, color="gray",
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        self.telemetry_canvas.draw_idle()
+
+    # ---- Generic async helpers --------------------------------------------
 
     def _start_worker(self, worker: Worker) -> None:
         """Starts a Worker while keeping a Python reference to it alive
@@ -238,6 +325,13 @@ class MainWindow(QMainWindow):
         self.status_bar.clearMessage()
         QMessageBox.critical(self, "OpenF1 request failed", message.strip().splitlines()[-1])
 
+    def _checked_drivers(self) -> list[dict]:
+        return [
+            self.driver_list.item(i).data(Qt.UserRole)
+            for i in range(self.driver_list.count())
+            if self.driver_list.item(i).checkState() == Qt.Checked
+        ]
+
     # ---- Cascading selection: Year -> Meeting -> Session -> Drivers ------
 
     def _populate_years(self) -> None:
@@ -252,8 +346,10 @@ class MainWindow(QMainWindow):
         year = self.year_combo.currentData()
         self._clear_combo(self.meeting_combo, "-- Select Grand Prix --")
         self._clear_combo(self.session_combo, "-- Select session --")
+        self._clear_combo(self.lap_combo, "-- Select session first --")
         self.driver_list.clear()
         self.plot_button.setEnabled(False)
+        self.telemetry_plot_button.setEnabled(False)
         if year is None:
             return
         self._run_async(
@@ -272,8 +368,10 @@ class MainWindow(QMainWindow):
     def _on_meeting_changed(self) -> None:
         meeting_key = self.meeting_combo.currentData()
         self._clear_combo(self.session_combo, "-- Select session --")
+        self._clear_combo(self.lap_combo, "-- Select session first --")
         self.driver_list.clear()
         self.plot_button.setEnabled(False)
+        self.telemetry_plot_button.setEnabled(False)
         if meeting_key is None:
             return
         self._run_async(
@@ -292,7 +390,9 @@ class MainWindow(QMainWindow):
     def _on_session_changed(self) -> None:
         session_key = self.session_combo.currentData()
         self.driver_list.clear()
+        self._clear_combo(self.lap_combo, "-- Select lap --")
         self.plot_button.setEnabled(False)
+        self.telemetry_plot_button.setEnabled(False)
         if session_key is None:
             return
 
@@ -306,13 +406,39 @@ class MainWindow(QMainWindow):
                 session_key=session_key,
             )
 
-        # Warm the lap-data cache in the background so Plot feels instant.
-        if session_key not in self._laps_by_session:
+        # Warm the lap-data cache in the background so Plot feels instant,
+        # and populate the telemetry tab's Lap dropdown once it's in.
+        if session_key in self._laps_by_session:
+            self._populate_lap_combo(self._laps_by_session[session_key])
+        else:
             worker = Worker(api.get_laps, session_key=session_key)
             worker.signals.finished.connect(
-                lambda laps, sk=session_key: self._laps_by_session.__setitem__(sk, laps)
+                lambda laps, sk=session_key: self._on_laps_cached(sk, laps)
             )
             self._start_worker(worker)
+
+    def _on_laps_cached(self, session_key: int, laps: list[dict]) -> None:
+        self._laps_by_session[session_key] = laps
+        if self.session_combo.currentData() == session_key:
+            self._populate_lap_combo(laps)
+
+    def _populate_lap_combo(self, laps: list[dict]) -> None:
+        lap_numbers = sorted(
+            {
+                lap["lap_number"]
+                for lap in laps
+                if lap.get("date_start") and lap.get("lap_duration")
+            }
+        )
+        self.lap_combo.blockSignals(True)
+        self.lap_combo.clear()
+        self.lap_combo.addItem("-- Select lap --", None)
+        for number in lap_numbers:
+            self.lap_combo.addItem(f"Lap {number}", number)
+        self.lap_combo.blockSignals(False)
+        if lap_numbers:
+            self.lap_combo.setCurrentIndex(1)
+        self.telemetry_plot_button.setEnabled(bool(lap_numbers))
 
     def _populate_drivers(self, session_key: int, drivers: list[dict]) -> None:
         self._drivers_by_session[session_key] = drivers
@@ -354,18 +480,14 @@ class MainWindow(QMainWindow):
         combo.addItem(placeholder, None)
         combo.blockSignals(False)
 
-    # ---- Plotting ----------------------------------------------------------
+    # ---- Lap Summary plotting ---------------------------------------------
 
     def _on_plot_clicked(self) -> None:
         session_key = self.session_combo.currentData()
         if session_key is None:
             return
 
-        checked_drivers = [
-            self.driver_list.item(i).data(Qt.UserRole)
-            for i in range(self.driver_list.count())
-            if self.driver_list.item(i).checkState() == Qt.Checked
-        ]
+        checked_drivers = self._checked_drivers()
         if not checked_drivers:
             QMessageBox.information(self, "No drivers selected", "Tick at least one driver to plot.")
             return
@@ -442,6 +564,174 @@ class MainWindow(QMainWindow):
 
         self.figure.tight_layout()
         self.canvas.draw_idle()
+
+    # ---- Car Telemetry plotting --------------------------------------------
+
+    def _on_telemetry_plot_clicked(self) -> None:
+        session_key = self.session_combo.currentData()
+        lap_number = self.lap_combo.currentData()
+        if session_key is None or lap_number is None:
+            return
+
+        checked_drivers = self._checked_drivers()
+        if not checked_drivers:
+            QMessageBox.information(self, "No drivers selected", "Tick at least one driver to plot.")
+            return
+
+        channels = [name for name, check in self.channel_checks.items() if check.isChecked()]
+        if not channels:
+            QMessageBox.information(self, "No channels selected", "Tick at least one channel to plot.")
+            return
+
+        all_laps = self._laps_by_session.get(session_key)
+        if all_laps is None:
+            self._run_async(
+                api.get_laps,
+                lambda laps: self._fetch_telemetry(session_key, laps, lap_number, checked_drivers, channels),
+                "Loading lap data...",
+                session_key=session_key,
+            )
+        else:
+            self._fetch_telemetry(session_key, all_laps, lap_number, checked_drivers, channels)
+
+    def _fetch_telemetry(
+        self,
+        session_key: int,
+        all_laps: list[dict],
+        lap_number: int,
+        drivers: list[dict],
+        channels: list[str],
+    ) -> None:
+        self._laps_by_session[session_key] = all_laps
+
+        lap_by_driver = {
+            lap["driver_number"]: lap
+            for lap in all_laps
+            if lap.get("lap_number") == lap_number and lap.get("date_start") and lap.get("lap_duration")
+        }
+
+        self._pending_telemetry = {
+            "session_key": session_key,
+            "lap_number": lap_number,
+            "drivers": drivers,
+            "channels": channels,
+            "data": {},
+        }
+
+        to_fetch: list[tuple[int, dict]] = []
+        for driver in drivers:
+            driver_number = driver["driver_number"]
+            lap = lap_by_driver.get(driver_number)
+            if lap is None:
+                continue  # this driver has no timed lap with this number
+
+            cache_key = (session_key, driver_number, lap_number)
+            cached = self._telemetry_cache.get(cache_key)
+            if cached is not None:
+                self._pending_telemetry["data"][driver_number] = cached
+            else:
+                to_fetch.append((driver_number, lap))
+
+        if not to_fetch:
+            self._draw_telemetry()
+            return
+
+        self.telemetry_plot_button.setEnabled(False)
+        self.status_bar.showMessage("Loading telemetry...")
+        self._telemetry_fetch_remaining = len(to_fetch)
+
+        for driver_number, lap in to_fetch:
+            date_from = lap["date_start"]
+            start_dt = datetime.fromisoformat(date_from)
+            date_to = (start_dt + timedelta(seconds=lap["lap_duration"])).isoformat()
+
+            worker = Worker(
+                api.get_car_data,
+                session_key=session_key,
+                driver_number=driver_number,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            worker.signals.finished.connect(
+                lambda data, dn=driver_number: self._on_telemetry_fetched(session_key, lap_number, dn, data)
+            )
+            worker.signals.error.connect(self._on_telemetry_fetch_error)
+            self._start_worker(worker)
+
+    def _on_telemetry_fetched(self, session_key: int, lap_number: int, driver_number: int, data: list[dict]) -> None:
+        self._telemetry_cache[(session_key, driver_number, lap_number)] = data
+        if self._pending_telemetry is not None:
+            self._pending_telemetry["data"][driver_number] = data
+        self._telemetry_fetch_remaining -= 1
+        if self._telemetry_fetch_remaining <= 0:
+            self.status_bar.clearMessage()
+            self._draw_telemetry()
+
+    def _on_telemetry_fetch_error(self, message: str) -> None:
+        self._telemetry_fetch_remaining -= 1
+        if self._telemetry_fetch_remaining <= 0:
+            self.status_bar.clearMessage()
+            self._draw_telemetry()
+        QMessageBox.critical(self, "OpenF1 request failed", message.strip().splitlines()[-1])
+
+    def _draw_telemetry(self) -> None:
+        self.telemetry_plot_button.setEnabled(True)
+        info = self._pending_telemetry
+        if info is None:
+            return
+
+        channels: list[str] = info["channels"]
+        drivers: list[dict] = info["drivers"]
+        data_by_driver: dict[int, list[dict]] = info["data"]
+
+        self.telemetry_figure.clear()
+        axes = self.telemetry_figure.subplots(len(channels), 1, sharex=True)
+        if len(channels) == 1:
+            axes = [axes]
+
+        plotted_any = False
+        for ax, channel_name in zip(axes, channels):
+            field_name, y_label = TELEMETRY_CHANNELS[channel_name]
+            for driver in drivers:
+                driver_number = driver["driver_number"]
+                rows = data_by_driver.get(driver_number)
+                if not rows:
+                    continue
+
+                rows_sorted = sorted(rows, key=lambda r: r["date"])
+                t0 = datetime.fromisoformat(rows_sorted[0]["date"])
+                elapsed = [(datetime.fromisoformat(r["date"]) - t0).total_seconds() for r in rows_sorted]
+                values = [r.get(field_name) for r in rows_sorted]
+
+                colour = f"#{driver.get('team_colour') or '888888'}"
+                ax.plot(
+                    elapsed, values,
+                    linewidth=1.2, color=colour,
+                    label=driver.get("name_acronym", str(driver_number)),
+                )
+                plotted_any = True
+
+            ax.set_ylabel(y_label, fontsize=9)
+            ax.grid(True, alpha=0.3)
+
+        if not plotted_any:
+            axes[0].text(
+                0.5, 0.5, "No telemetry data for this selection",
+                ha="center", va="center", transform=axes[0].transAxes, color="gray",
+            )
+            for ax in axes:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            self.telemetry_canvas.draw_idle()
+            return
+
+        axes[-1].set_xlabel("Time into lap (s)")
+        axes[0].legend(loc="upper right", fontsize=7, ncol=min(len(drivers), 4))
+        self.telemetry_figure.suptitle(
+            f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Lap {info['lap_number']}"
+        )
+        self.telemetry_figure.tight_layout()
+        self.telemetry_canvas.draw_idle()
 
 
 def main() -> None:
