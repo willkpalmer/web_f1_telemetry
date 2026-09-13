@@ -100,6 +100,13 @@ class MainWindow(QMainWindow):
         self._drivers_by_session: dict[int, list[dict]] = {}
         self._laps_by_session: dict[int, list[dict]] = {}
 
+        # Keeps in-flight Worker objects alive: QRunnable/QObject instances
+        # with no Qt parent are only kept alive by Python's own refcounting,
+        # so a Worker with no other reference gets garbage-collected while
+        # its background thread is still running, and emitting its signal
+        # afterwards raises "Signal source has been deleted".
+        self._active_workers: list[Worker] = []
+
         self._build_ui()
         self._populate_years()
 
@@ -201,6 +208,14 @@ class MainWindow(QMainWindow):
 
     # ---- Generic async helper --------------------------------------------
 
+    def _start_worker(self, worker: Worker) -> None:
+        """Starts a Worker while keeping a Python reference to it alive
+        until it finishes, so it can't be garbage-collected mid-flight."""
+        self._active_workers.append(worker)
+        worker.signals.finished.connect(lambda _r, w=worker: self._active_workers.remove(w))
+        worker.signals.error.connect(lambda _e, w=worker: self._active_workers.remove(w))
+        self.thread_pool.start(worker)
+
     def _run_async(
         self,
         fn: Callable,
@@ -213,7 +228,7 @@ class MainWindow(QMainWindow):
         worker = Worker(fn, *args, **kwargs)
         worker.signals.finished.connect(lambda result: self._on_async_success(result, on_success))
         worker.signals.error.connect(self._on_async_error)
-        self.thread_pool.start(worker)
+        self._start_worker(worker)
 
     def _on_async_success(self, result: Any, callback: Callable[[Any], None]) -> None:
         self.status_bar.clearMessage()
@@ -297,7 +312,7 @@ class MainWindow(QMainWindow):
             worker.signals.finished.connect(
                 lambda laps, sk=session_key: self._laps_by_session.__setitem__(sk, laps)
             )
-            self.thread_pool.start(worker)
+            self._start_worker(worker)
 
     def _populate_drivers(self, session_key: int, drivers: list[dict]) -> None:
         self._drivers_by_session[session_key] = drivers
