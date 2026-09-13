@@ -15,9 +15,12 @@ lap-by-lap for whichever drivers you pick.
      coloured line per car (using each team's real colour).
    - **Car Telemetry** — pick a single **Lap**, tick the channels you want
      (Speed, Throttle, Brake, Gear, RPM, DRS), and click **Plot Telemetry**
-     to compare cars' traces through that lap, aligned on elapsed time
-     since the lap started. Note: OpenF1's free tier has no steering-angle
-     channel, so that's the one thing you can't compare here.
+     to compare cars' traces through that lap, aligned by distance
+     travelled since the lap started (so you can compare drivers
+     corner-for-corner) rather than by elapsed time. OpenF1 has no
+     distance channel, so it's derived by integrating each car's speed
+     over time. Note: OpenF1's free tier has no steering-angle channel,
+     so that's the one thing you can't compare here.
 
 Data only goes back to the 2023 season (that's what OpenF1 provides for
 free without authentication) — the year list starts there.

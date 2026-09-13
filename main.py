@@ -842,6 +842,23 @@ class MainWindow(QMainWindow):
             self._draw_telemetry()
         QMessageBox.critical(self, "OpenF1 request failed", message.strip().splitlines()[-1])
 
+    @staticmethod
+    def _cumulative_distance(rows_sorted: list[dict]) -> list[float]:
+        """
+        OpenF1's car_data has no distance channel, so this integrates speed
+        over time (trapezoidal rule) to get metres travelled since the
+        first sample - close enough to align drivers by track position
+        (e.g. corner-for-corner) rather than by elapsed time.
+        """
+        distance = [0.0]
+        for previous, current in zip(rows_sorted, rows_sorted[1:]):
+            dt = (
+                datetime.fromisoformat(current["date"]) - datetime.fromisoformat(previous["date"])
+            ).total_seconds()
+            avg_speed_ms = ((previous.get("speed") or 0) + (current.get("speed") or 0)) / 2 / 3.6
+            distance.append(distance[-1] + avg_speed_ms * dt)
+        return distance
+
     def _draw_telemetry(self) -> None:
         self.telemetry_plot_button.setEnabled(True)
         info = self._pending_telemetry
@@ -867,13 +884,12 @@ class MainWindow(QMainWindow):
                     continue
 
                 rows_sorted = sorted(rows, key=lambda r: r["date"])
-                t0 = datetime.fromisoformat(rows_sorted[0]["date"])
-                elapsed = [(datetime.fromisoformat(r["date"]) - t0).total_seconds() for r in rows_sorted]
+                distance = self._cumulative_distance(rows_sorted)
                 values = [r.get(field_name) for r in rows_sorted]
 
                 colour = f"#{driver.get('team_colour') or '888888'}"
                 ax.plot(
-                    elapsed, values,
+                    distance, values,
                     linewidth=1.2, color=colour,
                     label=driver.get("name_acronym", str(driver_number)),
                 )
@@ -893,7 +909,7 @@ class MainWindow(QMainWindow):
             self.telemetry_canvas.draw_idle()
             return
 
-        axes[-1].set_xlabel("Time into lap (s)")
+        axes[-1].set_xlabel("Distance into lap (m)")
         axes[0].legend(loc="upper right", fontsize=7, ncol=min(len(drivers), 4))
         self.telemetry_figure.suptitle(
             f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Lap {info['lap_number']}"
