@@ -41,9 +41,11 @@ lap-by-lap for whichever drivers you pick.
      Intermediate, blue Wet), so you can see stint lengths, pit stops
      and how pace fades as tyres wear. Compounds come from OpenF1's
      `/stints` endpoint; laps it has no stint for are shown in grey as
-     "Unknown". "Exclude outlier laps" (on by default) drops any lap 15%
-     or more slower or faster than that driver's median lap - e.g. safety
-     car, red flag or pit in-laps - so they don't squash the scale.
+     "Unknown". "Exclude outlier laps" (on by default) drops any lap that's
+     off that driver's median lap by at least the chosen percentage
+     (default 10%, either slower or faster) - e.g. safety car, red flag or
+     pit in-laps - so they don't squash the scale. Wherever a lap has been
+     left out, the line breaks rather than joining the laps either side.
 
 Data only goes back to the 2023 season (that's what OpenF1 provides for
 free without authentication) — the year list starts there.

@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -88,9 +89,10 @@ TYRE_COMPOUNDS: dict[str, tuple[str, str]] = {
 }
 UNKNOWN_COMPOUND = ("#9e9e9e", "Unknown")
 
-# A lap more than this fraction slower or faster than the driver's median
-# lap is treated as an outlier (safety car, red flag, pit in-lap, ...).
-TYRE_OUTLIER_THRESHOLD = 0.15
+# Default for the Tyre Strategy tab's outlier threshold: a lap this many
+# percent or more slower or faster than the driver's median lap is treated
+# as an outlier (safety car, red flag, pit in-lap, ...).
+DEFAULT_TYRE_OUTLIER_PERCENT = 10
 
 
 def _shift_lightness(hex_colour: str, index: int) -> str:
@@ -416,11 +418,19 @@ class MainWindow(QMainWindow):
         self.tyre_exclude_pit_laps_check.setChecked(True)
         controls_layout.addWidget(self.tyre_exclude_pit_laps_check)
 
-        self.tyre_exclude_outliers_check = QCheckBox(
-            f"Exclude outlier laps (±{TYRE_OUTLIER_THRESHOLD:.0%} of median)"
-        )
+        self.tyre_exclude_outliers_check = QCheckBox("Exclude outlier laps")
         self.tyre_exclude_outliers_check.setChecked(True)
         controls_layout.addWidget(self.tyre_exclude_outliers_check)
+
+        outlier_row = QHBoxLayout()
+        outlier_row.addWidget(QLabel("Off median by ≥"))
+        self.tyre_outlier_percent_spin = QSpinBox()
+        self.tyre_outlier_percent_spin.setRange(1, 100)
+        self.tyre_outlier_percent_spin.setSuffix("%")
+        self.tyre_outlier_percent_spin.setValue(DEFAULT_TYRE_OUTLIER_PERCENT)
+        outlier_row.addWidget(self.tyre_outlier_percent_spin)
+        controls_layout.addLayout(outlier_row)
+        self.tyre_exclude_outliers_check.toggled.connect(self.tyre_outlier_percent_spin.setEnabled)
 
         self.tyre_invert_time_axis_check = QCheckBox("Faster laps plotted higher")
         controls_layout.addWidget(self.tyre_invert_time_axis_check)
@@ -1494,20 +1504,22 @@ class MainWindow(QMainWindow):
         return "UNKNOWN"
 
     @staticmethod
-    def _without_outliers(laps: list[dict]) -> list[dict]:
-        """Drops laps whose time is TYRE_OUTLIER_THRESHOLD or more away
-        from the median of `laps` (one driver's laps), in either direction."""
+    def _without_outliers(laps: list[dict], threshold: float) -> list[dict]:
+        """Drops laps whose time is `threshold` (a fraction, e.g. 0.1) or
+        more away from the median of `laps` (one driver's laps), in either
+        direction."""
         if not laps:
             return laps
         median = statistics.median(lap["lap_duration"] for lap in laps)
         return [
             lap for lap in laps
-            if abs(lap["lap_duration"] - median) < TYRE_OUTLIER_THRESHOLD * median
+            if abs(lap["lap_duration"] - median) < threshold * median
         ]
 
     def _draw_tyre_strategy(self, all_laps: list[dict], stints: list[dict], drivers: list[dict]) -> None:
         exclude_pit_laps = self.tyre_exclude_pit_laps_check.isChecked()
         exclude_outliers = self.tyre_exclude_outliers_check.isChecked()
+        outlier_threshold = self.tyre_outlier_percent_spin.value() / 100
 
         # Work out each driver's laps first, so drivers with nothing to
         # show don't get an empty panel.
@@ -1523,7 +1535,7 @@ class MainWindow(QMainWindow):
             if exclude_pit_laps:
                 driver_laps = [lap for lap in driver_laps if not lap.get("is_pit_out_lap")]
             if exclude_outliers:
-                driver_laps = self._without_outliers(driver_laps)
+                driver_laps = self._without_outliers(driver_laps, outlier_threshold)
             if driver_laps:
                 driver_laps.sort(key=lambda lap: lap["lap_number"])
                 laps_by_driver.append((driver, driver_laps))
@@ -1553,7 +1565,18 @@ class MainWindow(QMainWindow):
 
             lap_numbers = [lap["lap_number"] for lap in driver_laps]
             values = [lap["lap_duration"] for lap in driver_laps]
-            ax.plot(lap_numbers, values, linewidth=1.5, color=colour, zorder=2)
+            # Break the line wherever lap numbers skip (an excluded pit
+            # out-lap or outlier, or a lap with no time), so the laps either
+            # side of the gap aren't joined up as if they were consecutive.
+            line_x: list[float] = []
+            line_y: list[float] = []
+            for i, (lap_number, value) in enumerate(zip(lap_numbers, values)):
+                if i and lap_number != lap_numbers[i - 1] + 1:
+                    line_x.append(float("nan"))
+                    line_y.append(float("nan"))
+                line_x.append(lap_number)
+                line_y.append(value)
+            ax.plot(line_x, line_y, linewidth=1.5, color=colour, zorder=2)
 
             # One scatter per compound so each gets a single fill colour.
             laps_by_compound: dict[str, tuple[list[int], list[float]]] = {}
