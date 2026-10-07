@@ -22,6 +22,7 @@ matplotlib.use("QtAgg")  # works with both PyQt and PySide bindings
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
@@ -69,6 +70,22 @@ TELEMETRY_CHANNELS: dict[str, tuple[str, str]] = {
 }
 
 FIRST_HISTORICAL_YEAR = 2023
+
+# The Tyre Strategy tab compares at most this many drivers, so the
+# compound markers on each line stay readable.
+MAX_TYRE_STRATEGY_DRIVERS = 4
+
+# OpenF1 compound name -> (marker fill colour, legend label), using the
+# colours Pirelli paints on the tyre sidewalls. Hard is white, so every
+# compound marker gets a dark edge to stay visible on a white background.
+TYRE_COMPOUNDS: dict[str, tuple[str, str]] = {
+    "SOFT": ("#e8002d", "Soft"),
+    "MEDIUM": ("#ffd12e", "Medium"),
+    "HARD": ("#f4f4f4", "Hard"),
+    "INTERMEDIATE": ("#39b54a", "Intermediate"),
+    "WET": ("#0067ad", "Wet"),
+}
+UNKNOWN_COMPOUND = ("#9e9e9e", "Unknown")
 
 
 def _shift_lightness(hex_colour: str, index: int) -> str:
@@ -136,6 +153,7 @@ class MainWindow(QMainWindow):
         self._meetings_by_key: dict[int, dict] = {}
         self._laps_by_session: dict[int, list[dict]] = {}
         self._telemetry_cache: dict[tuple[int, int, int], list[dict]] = {}
+        self._stints_by_session: dict[int, list[dict]] = {}
 
         # Set just before auto-selecting a meeting at startup so the
         # session cascade picks the specific session already confirmed to
@@ -178,6 +196,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_lap_summary_tab(), "Lap Summary")
         tabs.addTab(self._build_telemetry_tab(), "Car Telemetry")
         tabs.addTab(self._build_race_trace_tab(), "Race Trace")
+        tabs.addTab(self._build_tyre_strategy_tab(), "Tyre Strategy")
         splitter.addWidget(tabs)
 
         splitter.setStretchFactor(0, 0)
@@ -363,6 +382,60 @@ class MainWindow(QMainWindow):
 
         return tab
 
+    def _build_tyre_strategy_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        blurb = QLabel(
+            f"Lap times for up to {MAX_TYRE_STRATEGY_DRIVERS} drivers, with "
+            "each lap's marker coloured by the tyre compound in use."
+        )
+        blurb.setWordWrap(True)
+        controls_layout.addWidget(blurb)
+
+        controls_layout.addWidget(QLabel("<b>Drivers</b>"))
+        # Picked here rather than from the shared checklist, so the
+        # four-driver limit is built into the controls themselves.
+        self.tyre_driver_combos: list[QComboBox] = []
+        for _ in range(MAX_TYRE_STRATEGY_DRIVERS):
+            combo = QComboBox()
+            combo.addItem("-- None --", None)
+            controls_layout.addWidget(combo)
+            self.tyre_driver_combos.append(combo)
+
+        self.tyre_exclude_pit_laps_check = QCheckBox("Exclude pit out laps")
+        self.tyre_exclude_pit_laps_check.setChecked(True)
+        controls_layout.addWidget(self.tyre_exclude_pit_laps_check)
+
+        self.tyre_invert_time_axis_check = QCheckBox("Faster laps plotted higher")
+        controls_layout.addWidget(self.tyre_invert_time_axis_check)
+
+        self.tyre_plot_button = QPushButton("Plot Lap Times")
+        self.tyre_plot_button.setEnabled(False)
+        self.tyre_plot_button.clicked.connect(self._on_tyre_plot_clicked)
+        controls_layout.addWidget(self.tyre_plot_button)
+
+        controls_layout.addStretch(1)
+        controls.setFixedWidth(180)
+        layout.addWidget(controls)
+
+        plot_panel = QWidget()
+        plot_layout = QVBoxLayout(plot_panel)
+        self.tyre_figure = Figure(figsize=(7, 5))
+        self.tyre_canvas = FigureCanvas(self.tyre_figure)
+        self.tyre_toolbar = NavigationToolbar(self.tyre_canvas, plot_panel)
+        self.tyre_ax = self.tyre_figure.add_subplot(111)
+        self._reset_tyre_placeholder()
+        plot_layout.addWidget(self.tyre_toolbar)
+        plot_layout.addWidget(self.tyre_canvas, stretch=1)
+        layout.addWidget(plot_panel, stretch=1)
+
+        return tab
+
     def _reset_plot_placeholder(self) -> None:
         self.ax.clear()
         self.ax.text(
@@ -393,6 +466,16 @@ class MainWindow(QMainWindow):
         self.race_trace_ax.set_xticks([])
         self.race_trace_ax.set_yticks([])
         self.race_trace_canvas.draw_idle()
+
+    def _reset_tyre_placeholder(self) -> None:
+        self.tyre_ax.clear()
+        self.tyre_ax.text(
+            0.5, 0.5, "Select a session and up to four drivers, then click Plot Lap Times",
+            ha="center", va="center", transform=self.tyre_ax.transAxes, color="gray",
+        )
+        self.tyre_ax.set_xticks([])
+        self.tyre_ax.set_yticks([])
+        self.tyre_canvas.draw_idle()
 
     # ---- Generic async helpers --------------------------------------------
 
@@ -454,6 +537,7 @@ class MainWindow(QMainWindow):
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
         self.race_trace_plot_button.setEnabled(False)
+        self._populate_tyre_driver_combos([])
         if year is None:
             return
         self._run_async(
@@ -479,6 +563,7 @@ class MainWindow(QMainWindow):
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
         self.race_trace_plot_button.setEnabled(False)
+        self._populate_tyre_driver_combos([])
         if meeting_key is None:
             return
 
@@ -526,6 +611,7 @@ class MainWindow(QMainWindow):
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
         self.race_trace_plot_button.setEnabled(False)
+        self._populate_tyre_driver_combos([])
         if session_key is None:
             return
 
@@ -815,6 +901,24 @@ class MainWindow(QMainWindow):
 
         self.plot_button.setEnabled(self.driver_list.count() > 0)
         self.race_trace_plot_button.setEnabled(self.driver_list.count() > 0)
+        self._populate_tyre_driver_combos(drivers_sorted)
+
+    def _populate_tyre_driver_combos(self, drivers_sorted: list[dict]) -> None:
+        """Fills the Tyre Strategy tab's driver pickers with this session's
+        drivers, all starting on "-- None --"."""
+        for combo in self.tyre_driver_combos:
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("-- None --", None)
+            for driver in drivers_sorted:
+                colour_hex = driver.get("team_colour") or "888888"
+                combo.addItem(
+                    self._colour_swatch(f"#{colour_hex}"),
+                    f"{driver.get('name_acronym', '?')} - {driver.get('team_name', 'Unknown')}",
+                    driver,
+                )
+            combo.blockSignals(False)
+        self.tyre_plot_button.setEnabled(bool(drivers_sorted))
 
     @staticmethod
     def _colour_swatch(colour: str) -> QIcon:
@@ -1309,6 +1413,168 @@ class MainWindow(QMainWindow):
 
         self.race_trace_figure.tight_layout()
         self.race_trace_canvas.draw_idle()
+
+    # ---- Tyre Strategy plotting ---------------------------------------------
+
+    def _selected_tyre_drivers(self) -> list[dict]:
+        """The drivers picked in the Tyre Strategy tab, in picker order,
+        with blanks and repeats of the same driver dropped."""
+        drivers: list[dict] = []
+        seen: set[int] = set()
+        for combo in self.tyre_driver_combos:
+            driver = combo.currentData()
+            if driver is None or driver["driver_number"] in seen:
+                continue
+            seen.add(driver["driver_number"])
+            drivers.append(driver)
+        return drivers
+
+    def _on_tyre_plot_clicked(self) -> None:
+        session_key = self.session_combo.currentData()
+        if session_key is None:
+            return
+
+        drivers = self._selected_tyre_drivers()
+        if not drivers:
+            QMessageBox.information(self, "No drivers selected", "Pick at least one driver to plot.")
+            return
+
+        laps = self._laps_by_session.get(session_key)
+        stints = self._stints_by_session.get(session_key)
+        if laps is not None and stints is not None:
+            self._draw_tyre_strategy(laps, stints, drivers)
+            return
+
+        def fetch() -> tuple[list[dict], list[dict]]:
+            return (
+                laps if laps is not None else api.get_laps(session_key),
+                stints if stints is not None else api.get_stints(session_key),
+            )
+
+        self._run_async(
+            fetch,
+            lambda result: self._on_tyre_data_ready(session_key, result, drivers),
+            "Loading lap and tyre data...",
+        )
+
+    def _on_tyre_data_ready(
+        self, session_key: int, result: tuple[list[dict], list[dict]], drivers: list[dict]
+    ) -> None:
+        laps, stints = result
+        self._laps_by_session[session_key] = laps
+        self._stints_by_session[session_key] = stints
+        if self.session_combo.currentData() == session_key:
+            self._draw_tyre_strategy(laps, stints, drivers)
+
+    @staticmethod
+    def _compound_for_lap(driver_stints: list[dict], lap_number: int) -> str:
+        """The compound (e.g. "SOFT") a driver was on for a lap, from their
+        stints' lap ranges, or "UNKNOWN". A stint still running when the
+        data was captured may have no lap_end, so it's treated as
+        open-ended."""
+        for stint in driver_stints:
+            lap_start = stint.get("lap_start")
+            lap_end = stint.get("lap_end")
+            if lap_start is None or lap_number < lap_start:
+                continue
+            if lap_end is None or lap_number <= lap_end:
+                compound = (stint.get("compound") or "").upper()
+                return compound if compound in TYRE_COMPOUNDS else "UNKNOWN"
+        return "UNKNOWN"
+
+    def _draw_tyre_strategy(self, all_laps: list[dict], stints: list[dict], drivers: list[dict]) -> None:
+        exclude_pit_laps = self.tyre_exclude_pit_laps_check.isChecked()
+
+        ax = self.tyre_ax
+        ax.clear()
+        driver_colours = self._driver_plot_colours(drivers)
+        driver_handles = []
+        compounds_used: set[str] = set()
+
+        for driver in drivers:
+            driver_number = driver["driver_number"]
+            colour = driver_colours[driver_number]
+            driver_stints = [s for s in stints if s.get("driver_number") == driver_number]
+
+            driver_laps = [
+                lap for lap in all_laps
+                if lap.get("driver_number") == driver_number
+                and lap.get("lap_duration") is not None
+                and lap.get("lap_number") is not None
+            ]
+            if exclude_pit_laps:
+                driver_laps = [lap for lap in driver_laps if not lap.get("is_pit_out_lap")]
+            if not driver_laps:
+                continue
+            driver_laps.sort(key=lambda lap: lap["lap_number"])
+
+            lap_numbers = [lap["lap_number"] for lap in driver_laps]
+            values = [lap["lap_duration"] for lap in driver_laps]
+
+            (line,) = ax.plot(
+                lap_numbers, values,
+                linewidth=1.5, color=colour, zorder=2,
+                label=driver.get("name_acronym", str(driver_number)),
+            )
+            driver_handles.append(line)
+
+            # One scatter per compound so each gets a single fill colour.
+            laps_by_compound: dict[str, tuple[list[int], list[float]]] = {}
+            for lap_number, value in zip(lap_numbers, values):
+                compound = self._compound_for_lap(driver_stints, lap_number)
+                xs, ys = laps_by_compound.setdefault(compound, ([], []))
+                xs.append(lap_number)
+                ys.append(value)
+
+            for compound, (xs, ys) in laps_by_compound.items():
+                fill = TYRE_COMPOUNDS.get(compound, UNKNOWN_COMPOUND)[0]
+                ax.scatter(
+                    xs, ys, s=30, color=fill, edgecolors="#333333", linewidths=0.8, zorder=3,
+                )
+                compounds_used.add(compound)
+
+        if not driver_handles:
+            ax.text(
+                0.5, 0.5, "No data for this selection",
+                ha="center", va="center", transform=ax.transAxes, color="gray",
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            self.tyre_canvas.draw_idle()
+            return
+
+        ax.set_xlabel("Lap")
+        ax.set_ylabel("Lap time (s)")
+        ax.set_title(
+            f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Lap Times by Tyre"
+        )
+        ax.grid(True, alpha=0.3)
+
+        # Both legends sit outside the axes so they never cover laps.
+        driver_legend = ax.legend(
+            handles=driver_handles, title="Driver", fontsize=8,
+            loc="upper left", bbox_to_anchor=(1.01, 1.0),
+        )
+        ax.add_artist(driver_legend)
+        compound_order = list(TYRE_COMPOUNDS) + ["UNKNOWN"]
+        compound_handles = [
+            Line2D(
+                [], [], linestyle="none", marker="o", markersize=7,
+                markerfacecolor=TYRE_COMPOUNDS.get(c, UNKNOWN_COMPOUND)[0], markeredgecolor="#333333",
+                label=TYRE_COMPOUNDS.get(c, UNKNOWN_COMPOUND)[1],
+            )
+            for c in compound_order if c in compounds_used
+        ]
+        ax.legend(
+            handles=compound_handles, title="Tyre", fontsize=8,
+            loc="lower left", bbox_to_anchor=(1.01, 0.0),
+        )
+
+        if self.tyre_invert_time_axis_check.isChecked():
+            ax.invert_yaxis()
+
+        self.tyre_figure.tight_layout()
+        self.tyre_canvas.draw_idle()
 
 
 def main() -> None:

@@ -33,6 +33,14 @@ lap-by-lap for whichever drivers you pick.
      minus the leader's. Most useful for Race/Sprint sessions, where lap
      numbers line up across the field; Practice/Qualifying laps aren't
      sequential in the same way, so it's not very meaningful there.
+   - **Tyre Strategy** — pick up to four drivers from the tab's own
+     driver pickers and click **Plot Lap Times** to see each driver's lap
+     times as a line, with every lap's marker coloured by the tyre
+     compound in use (red Soft, yellow Medium, white Hard, green
+     Intermediate, blue Wet), so you can see stint lengths, pit stops
+     and how pace fades as tyres wear. Compounds come from OpenF1's
+     `/stints` endpoint; laps it has no stint for are shown in grey as
+     "Unknown".
 
 Data only goes back to the 2023 season (that's what OpenF1 provides for
 free without authentication) — the year list starts there.
@@ -67,12 +75,11 @@ before `python main.py`.
 
 ## Project layout
 
-- `main.py` — the PySide6 GUI: dropdowns, driver checklist, and the two
-  tabs' matplotlib charts.
+- `main.py` — the PySide6 GUI: dropdowns, driver checklist, and each
+  tab's matplotlib charts.
 - `openf1_client.py` — a thin wrapper around the OpenF1 REST endpoints
-  (`meetings`, `sessions`, `drivers`, `laps`, `car_data`). Kept separate
-  so you can reuse it or extend it (e.g. add `stints`) without touching
-  the UI code.
+  (`meetings`, `sessions`, `drivers`, `laps`, `stints`, `car_data`). Kept
+  separate so you can reuse it or extend it without touching the UI code.
 - `circuit_info.py` — looks up each circuit's corner numbers and their
   position along the lap, from `circuit_corners.json` (see below).
 - `circuit_corners.json` — a bundled, pre-generated table of corner
