@@ -10,6 +10,7 @@ Run with:  python main.py
 
 from __future__ import annotations
 
+import colorsys
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -42,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import circuit_info
 import openf1_client as api
 
 # Display name -> (JSON field on the /laps object, y-axis label)
@@ -66,6 +69,24 @@ TELEMETRY_CHANNELS: dict[str, tuple[str, str]] = {
 }
 
 FIRST_HISTORICAL_YEAR = 2023
+
+
+def _shift_lightness(hex_colour: str, index: int) -> str:
+    """Nudges a hex colour's lightness apart for the `index`-th driver
+    sharing it, alternating lighter/darker and growing the shift for each
+    further one; `index == 0` returns the colour unchanged."""
+    if index == 0:
+        return hex_colour
+
+    r, g, b = (int(hex_colour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+
+    step = (index + 1) // 2
+    sign = 1 if index % 2 else -1
+    l = min(0.92, max(0.08, l + sign * step * 0.22))
+
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    return "#{:02x}{:02x}{:02x}".format(round(r * 255), round(g * 255), round(b * 255))
 
 
 # --------------------------------------------------------------------------
@@ -112,6 +133,7 @@ class MainWindow(QMainWindow):
         # needs a fresh network call.
         self._drivers_by_session: dict[int, list[dict]] = {}
         self._sessions_by_meeting: dict[int, list[dict]] = {}
+        self._meetings_by_key: dict[int, dict] = {}
         self._laps_by_session: dict[int, list[dict]] = {}
         self._telemetry_cache: dict[tuple[int, int, int], list[dict]] = {}
 
@@ -155,6 +177,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._build_lap_summary_tab(), "Lap Summary")
         tabs.addTab(self._build_telemetry_tab(), "Car Telemetry")
+        tabs.addTab(self._build_race_trace_tab(), "Race Trace")
         splitter.addWidget(tabs)
 
         splitter.setStretchFactor(0, 0)
@@ -187,6 +210,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("<b>Drivers</b>"))
         self.driver_list = QListWidget()
         self.driver_list.setSelectionMode(QListWidget.NoSelection)
+        self.driver_list.itemChanged.connect(self._on_driver_checklist_changed)
         layout.addWidget(self.driver_list, stretch=1)
 
         select_row = QHBoxLayout()
@@ -251,9 +275,26 @@ class MainWindow(QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
 
         controls_layout.addWidget(QLabel("<b>Lap</b>"))
+
+        self.link_laps_check = QCheckBox("Same lap for all drivers")
+        self.link_laps_check.setChecked(True)
+        self.link_laps_check.toggled.connect(self._on_link_laps_toggled)
+        controls_layout.addWidget(self.link_laps_check)
+
         self.lap_combo = QComboBox()
         self.lap_combo.addItem("-- Select session first --", None)
         controls_layout.addWidget(self.lap_combo)
+
+        # Per-driver lap pickers, shown instead of the combo above when
+        # "Same lap for all drivers" is unticked - one row per checked
+        # driver, kept in sync with the driver list (see
+        # _rebuild_per_driver_lap_rows).
+        self.per_driver_lap_widget = QWidget()
+        self.per_driver_lap_layout = QFormLayout(self.per_driver_lap_widget)
+        self.per_driver_lap_layout.setContentsMargins(0, 0, 0, 0)
+        self.per_driver_lap_widget.setVisible(False)
+        controls_layout.addWidget(self.per_driver_lap_widget)
+        self.per_driver_lap_combos: dict[int, QComboBox] = {}
 
         controls_layout.addWidget(QLabel("<b>Channels</b>"))
         self.channel_checks: dict[str, QCheckBox] = {}
@@ -284,6 +325,44 @@ class MainWindow(QMainWindow):
 
         return tab
 
+    def _build_race_trace_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        blurb = QLabel(
+            "Each driver's gap to the race leader, lap by lap. The leader "
+            "is whoever's actually ahead on track, even if they're not "
+            "ticked."
+        )
+        blurb.setWordWrap(True)
+        controls_layout.addWidget(blurb)
+
+        self.race_trace_plot_button = QPushButton("Plot Race Trace")
+        self.race_trace_plot_button.setEnabled(False)
+        self.race_trace_plot_button.clicked.connect(self._on_race_trace_plot_clicked)
+        controls_layout.addWidget(self.race_trace_plot_button)
+
+        controls_layout.addStretch(1)
+        controls.setFixedWidth(180)
+        layout.addWidget(controls)
+
+        plot_panel = QWidget()
+        plot_layout = QVBoxLayout(plot_panel)
+        self.race_trace_figure = Figure(figsize=(7, 5))
+        self.race_trace_canvas = FigureCanvas(self.race_trace_figure)
+        self.race_trace_toolbar = NavigationToolbar(self.race_trace_canvas, plot_panel)
+        self.race_trace_ax = self.race_trace_figure.add_subplot(111)
+        self._reset_race_trace_placeholder()
+        plot_layout.addWidget(self.race_trace_toolbar)
+        plot_layout.addWidget(self.race_trace_canvas, stretch=1)
+        layout.addWidget(plot_panel, stretch=1)
+
+        return tab
+
     def _reset_plot_placeholder(self) -> None:
         self.ax.clear()
         self.ax.text(
@@ -298,12 +377,22 @@ class MainWindow(QMainWindow):
         self.telemetry_figure.clear()
         ax = self.telemetry_figure.add_subplot(111)
         ax.text(
-            0.5, 0.5, "Select a session, lap, drivers and channels,\nthen click Plot Telemetry",
+            0.5, 0.5, "Select a session, lap(s), drivers and channels,\nthen click Plot Telemetry",
             ha="center", va="center", transform=ax.transAxes, color="gray",
         )
         ax.set_xticks([])
         ax.set_yticks([])
         self.telemetry_canvas.draw_idle()
+
+    def _reset_race_trace_placeholder(self) -> None:
+        self.race_trace_ax.clear()
+        self.race_trace_ax.text(
+            0.5, 0.5, "Select a session and drivers, then click Plot Race Trace",
+            ha="center", va="center", transform=self.race_trace_ax.transAxes, color="gray",
+        )
+        self.race_trace_ax.set_xticks([])
+        self.race_trace_ax.set_yticks([])
+        self.race_trace_canvas.draw_idle()
 
     # ---- Generic async helpers --------------------------------------------
 
@@ -360,9 +449,11 @@ class MainWindow(QMainWindow):
         self._clear_combo(self.meeting_combo, "-- Select Grand Prix --")
         self._clear_combo(self.session_combo, "-- Select session --")
         self._clear_combo(self.lap_combo, "-- Select session first --")
+        self._clear_per_driver_lap_rows()
         self.driver_list.clear()
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
+        self.race_trace_plot_button.setEnabled(False)
         if year is None:
             return
         self._run_async(
@@ -374,6 +465,7 @@ class MainWindow(QMainWindow):
         self.meeting_combo.blockSignals(True)
         for meeting in meetings_sorted:
             self.meeting_combo.addItem(meeting["meeting_name"], meeting["meeting_key"])
+            self._meetings_by_key[meeting["meeting_key"]] = meeting
         self.meeting_combo.blockSignals(False)
         if meetings_sorted and auto_select:
             self.meeting_combo.setCurrentIndex(1)  # trigger _on_meeting_changed
@@ -382,9 +474,11 @@ class MainWindow(QMainWindow):
         meeting_key = self.meeting_combo.currentData()
         self._clear_combo(self.session_combo, "-- Select session --")
         self._clear_combo(self.lap_combo, "-- Select session first --")
+        self._clear_per_driver_lap_rows()
         self.driver_list.clear()
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
+        self.race_trace_plot_button.setEnabled(False)
         if meeting_key is None:
             return
 
@@ -428,8 +522,10 @@ class MainWindow(QMainWindow):
         session_key = self.session_combo.currentData()
         self.driver_list.clear()
         self._clear_combo(self.lap_combo, "-- Select lap --")
+        self._clear_per_driver_lap_rows()
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
+        self.race_trace_plot_button.setEnabled(False)
         if session_key is None:
             return
 
@@ -476,6 +572,95 @@ class MainWindow(QMainWindow):
         if lap_numbers:
             self.lap_combo.setCurrentIndex(1)
         self.telemetry_plot_button.setEnabled(bool(lap_numbers))
+        if not self.link_laps_check.isChecked():
+            self._rebuild_per_driver_lap_rows()
+
+    # ---- Per-driver lap selection (Car Telemetry tab) ---------------------
+
+    def _on_link_laps_toggled(self, linked: bool) -> None:
+        self.lap_combo.setVisible(linked)
+        self.per_driver_lap_widget.setVisible(not linked)
+        if not linked:
+            self._rebuild_per_driver_lap_rows()
+
+    def _on_driver_checklist_changed(self, _item: QListWidgetItem) -> None:
+        if not self.link_laps_check.isChecked():
+            self._rebuild_per_driver_lap_rows()
+
+    def _clear_per_driver_lap_rows(self) -> None:
+        while self.per_driver_lap_layout.rowCount():
+            self.per_driver_lap_layout.removeRow(0)
+        self.per_driver_lap_combos.clear()
+
+    def _rebuild_per_driver_lap_rows(self) -> None:
+        """Rebuilds the per-driver lap combos to match the currently
+        checked drivers, preserving each driver's existing selection where
+        possible and defaulting new rows to the linked lap combo's
+        current lap."""
+        checked_drivers = self._checked_drivers()
+        checked_numbers = {d["driver_number"] for d in checked_drivers}
+
+        previous_selection = {
+            driver_number: combo.currentData()
+            for driver_number, combo in self.per_driver_lap_combos.items()
+            if driver_number in checked_numbers
+        }
+
+        self._clear_per_driver_lap_rows()
+
+        session_key = self.session_combo.currentData()
+        all_laps = self._laps_by_session.get(session_key, []) if session_key is not None else []
+        default_lap = self.lap_combo.currentData()
+
+        for driver in checked_drivers:
+            driver_number = driver["driver_number"]
+            lap_numbers = sorted(
+                {
+                    lap["lap_number"]
+                    for lap in all_laps
+                    if lap.get("driver_number") == driver_number
+                    and lap.get("date_start") and lap.get("lap_duration")
+                }
+            )
+
+            combo = QComboBox()
+            combo.addItem("-- Select lap --", None)
+            for number in lap_numbers:
+                combo.addItem(f"Lap {number}", number)
+
+            restore_lap = previous_selection.get(driver_number, default_lap)
+            index = combo.findData(restore_lap)
+            combo.setCurrentIndex(index if index != -1 else (1 if lap_numbers else 0))
+
+            self.per_driver_lap_combos[driver_number] = combo
+            self.per_driver_lap_layout.addRow(driver.get("name_acronym", str(driver_number)), combo)
+
+    def _lap_selection_by_driver(self, drivers: list[dict]) -> Optional[dict[int, int]]:
+        """Resolves the lap to plot for each driver, from either the
+        single linked combo or the per-driver rows. Returns None (after
+        telling the user why) if the selection is incomplete."""
+        if self.link_laps_check.isChecked():
+            lap_number = self.lap_combo.currentData()
+            if lap_number is None:
+                return None
+            return {driver["driver_number"]: lap_number for driver in drivers}
+
+        selection: dict[int, int] = {}
+        missing = []
+        for driver in drivers:
+            combo = self.per_driver_lap_combos.get(driver["driver_number"])
+            lap_number = combo.currentData() if combo else None
+            if lap_number is None:
+                missing.append(driver.get("name_acronym", str(driver["driver_number"])))
+            else:
+                selection[driver["driver_number"]] = lap_number
+
+        if missing:
+            QMessageBox.information(
+                self, "Lap not selected", "Select a lap for: " + ", ".join(missing),
+            )
+            return None
+        return selection
 
     # ---- Startup default: current year + most recent GP with data --------
 
@@ -629,12 +814,34 @@ class MainWindow(QMainWindow):
             self.driver_list.addItem(item)
 
         self.plot_button.setEnabled(self.driver_list.count() > 0)
+        self.race_trace_plot_button.setEnabled(self.driver_list.count() > 0)
 
     @staticmethod
     def _colour_swatch(colour: str) -> QIcon:
         pixmap = QPixmap(14, 14)
         pixmap.fill(QColor(colour))
         return QIcon(pixmap)
+
+    @staticmethod
+    def _driver_plot_colours(drivers: list[dict]) -> dict[int, str]:
+        """
+        Maps driver_number -> hex colour to plot that driver in.
+
+        Team-mates share an identical `team_colour` from OpenF1, so two of
+        them plotted together would otherwise be indistinguishable - each
+        driver beyond the first with a given team colour gets that colour's
+        lightness nudged apart (alternating lighter/darker, growing with
+        each further team-mate) so every line on the chart stays legible
+        while still reading as "that team's colour".
+        """
+        colours: dict[int, str] = {}
+        seen_per_colour: dict[str, int] = {}
+        for driver in drivers:
+            base = f"#{driver.get('team_colour') or '888888'}"
+            index = seen_per_colour.get(base, 0)
+            seen_per_colour[base] = index + 1
+            colours[driver["driver_number"]] = _shift_lightness(base, index)
+        return colours
 
     def _set_all_drivers_checked(self, checked: bool) -> None:
         state = Qt.Checked if checked else Qt.Unchecked
@@ -682,10 +889,11 @@ class MainWindow(QMainWindow):
 
         self.ax.clear()
         plotted_any = False
+        driver_colours = self._driver_plot_colours(drivers)
 
         for driver in drivers:
             driver_number = driver["driver_number"]
-            colour = f"#{driver.get('team_colour') or '888888'}"
+            colour = driver_colours[driver_number]
 
             driver_laps = [lap for lap in all_laps if lap.get("driver_number") == driver_number]
             if exclude_pit_laps:
@@ -737,13 +945,16 @@ class MainWindow(QMainWindow):
 
     def _on_telemetry_plot_clicked(self) -> None:
         session_key = self.session_combo.currentData()
-        lap_number = self.lap_combo.currentData()
-        if session_key is None or lap_number is None:
+        if session_key is None:
             return
 
         checked_drivers = self._checked_drivers()
         if not checked_drivers:
             QMessageBox.information(self, "No drivers selected", "Tick at least one driver to plot.")
+            return
+
+        lap_number_by_driver = self._lap_selection_by_driver(checked_drivers)
+        if lap_number_by_driver is None:
             return
 
         channels = [name for name, check in self.channel_checks.items() if check.isChecked()]
@@ -755,41 +966,46 @@ class MainWindow(QMainWindow):
         if all_laps is None:
             self._run_async(
                 api.get_laps,
-                lambda laps: self._fetch_telemetry(session_key, laps, lap_number, checked_drivers, channels),
+                lambda laps: self._fetch_telemetry(session_key, laps, lap_number_by_driver, checked_drivers, channels),
                 "Loading lap data...",
                 session_key=session_key,
             )
         else:
-            self._fetch_telemetry(session_key, all_laps, lap_number, checked_drivers, channels)
+            self._fetch_telemetry(session_key, all_laps, lap_number_by_driver, checked_drivers, channels)
 
     def _fetch_telemetry(
         self,
         session_key: int,
         all_laps: list[dict],
-        lap_number: int,
+        lap_number_by_driver: dict[int, int],
         drivers: list[dict],
         channels: list[str],
     ) -> None:
         self._laps_by_session[session_key] = all_laps
 
-        lap_by_driver = {
-            lap["driver_number"]: lap
+        laps_by_driver_and_number = {
+            (lap["driver_number"], lap["lap_number"]): lap
             for lap in all_laps
-            if lap.get("lap_number") == lap_number and lap.get("date_start") and lap.get("lap_duration")
+            if lap.get("date_start") and lap.get("lap_duration")
         }
 
         self._pending_telemetry = {
             "session_key": session_key,
-            "lap_number": lap_number,
+            "lap_number_by_driver": lap_number_by_driver,
             "drivers": drivers,
             "channels": channels,
             "data": {},
+            "corners": self._get_corners_for_current_meeting(),
         }
 
-        to_fetch: list[tuple[int, dict]] = []
+        to_fetch: list[tuple[int, dict, int]] = []
         for driver in drivers:
             driver_number = driver["driver_number"]
-            lap = lap_by_driver.get(driver_number)
+            lap_number = lap_number_by_driver.get(driver_number)
+            if lap_number is None:
+                continue
+
+            lap = laps_by_driver_and_number.get((driver_number, lap_number))
             if lap is None:
                 continue  # this driver has no timed lap with this number
 
@@ -798,7 +1014,7 @@ class MainWindow(QMainWindow):
             if cached is not None:
                 self._pending_telemetry["data"][driver_number] = cached
             else:
-                to_fetch.append((driver_number, lap))
+                to_fetch.append((driver_number, lap, lap_number))
 
         if not to_fetch:
             self._draw_telemetry()
@@ -808,7 +1024,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Loading telemetry...")
         self._telemetry_fetch_remaining = len(to_fetch)
 
-        for driver_number, lap in to_fetch:
+        for driver_number, lap, lap_number in to_fetch:
             date_from = lap["date_start"]
             start_dt = datetime.fromisoformat(date_from)
             date_to = (start_dt + timedelta(seconds=lap["lap_duration"])).isoformat()
@@ -821,7 +1037,7 @@ class MainWindow(QMainWindow):
                 date_to=date_to,
             )
             worker.signals.finished.connect(
-                lambda data, dn=driver_number: self._on_telemetry_fetched(session_key, lap_number, dn, data)
+                lambda data, sk=session_key, dn=driver_number, ln=lap_number: self._on_telemetry_fetched(sk, ln, dn, data)
             )
             worker.signals.error.connect(self._on_telemetry_fetch_error)
             self._start_worker(worker)
@@ -841,6 +1057,24 @@ class MainWindow(QMainWindow):
             self.status_bar.clearMessage()
             self._draw_telemetry()
         QMessageBox.critical(self, "OpenF1 request failed", message.strip().splitlines()[-1])
+
+    def _get_corners_for_current_meeting(self) -> list[dict]:
+        """
+        Corner markers (as a fraction of the lap, 0-1) for the currently
+        selected Grand Prix's circuit - a local, bundled lookup (see
+        circuit_info.py), so this is instant and needs no network call.
+        Returns [] if this circuit isn't in the bundled data (e.g. a
+        brand-new track), in which case the plot just falls back to a
+        plain distance axis.
+        """
+        meeting = self._meetings_by_key.get(self.meeting_combo.currentData())
+        circuit_key = meeting.get("circuit_key") if meeting else None
+        if circuit_key is None:
+            return []
+        try:
+            return circuit_info.get_corners(circuit_key)
+        except circuit_info.CircuitInfoError:
+            return []
 
     @staticmethod
     def _cumulative_distance(rows_sorted: list[dict]) -> list[float]:
@@ -868,26 +1102,37 @@ class MainWindow(QMainWindow):
         channels: list[str] = info["channels"]
         drivers: list[dict] = info["drivers"]
         data_by_driver: dict[int, list[dict]] = info["data"]
+        corners: list[dict] = info.get("corners") or []
 
         self.telemetry_figure.clear()
         axes = self.telemetry_figure.subplots(len(channels), 1, sharex=True)
         if len(channels) == 1:
             axes = [axes]
 
+        # Sort once and reuse across channels rather than per (channel,
+        # driver) pair - the distance integration is the same either way.
+        distance_by_driver: dict[int, list[float]] = {}
+        for driver_number, rows in list(data_by_driver.items()):
+            if not rows:
+                continue
+            rows_sorted = sorted(rows, key=lambda r: r["date"])
+            data_by_driver[driver_number] = rows_sorted
+            distance_by_driver[driver_number] = self._cumulative_distance(rows_sorted)
+
         plotted_any = False
+        driver_colours = self._driver_plot_colours(drivers)
         for ax, channel_name in zip(axes, channels):
             field_name, y_label = TELEMETRY_CHANNELS[channel_name]
             for driver in drivers:
                 driver_number = driver["driver_number"]
-                rows = data_by_driver.get(driver_number)
-                if not rows:
+                rows_sorted = data_by_driver.get(driver_number)
+                distance = distance_by_driver.get(driver_number)
+                if not rows_sorted or not distance:
                     continue
 
-                rows_sorted = sorted(rows, key=lambda r: r["date"])
-                distance = self._cumulative_distance(rows_sorted)
                 values = [r.get(field_name) for r in rows_sorted]
 
-                colour = f"#{driver.get('team_colour') or '888888'}"
+                colour = driver_colours[driver_number]
                 ax.plot(
                     distance, values,
                     linewidth=1.2, color=colour,
@@ -909,13 +1154,161 @@ class MainWindow(QMainWindow):
             self.telemetry_canvas.draw_idle()
             return
 
-        axes[-1].set_xlabel("Distance into lap (m)")
+        lap_distance = max(
+            (distances[-1] for distances in distance_by_driver.values() if distances),
+            default=None,
+        )
+
+        if lap_distance:
+            axes[-1].set_xlim(0, lap_distance)
+
+        # Corner positions are stored as a fraction of the lap (0-1) rather
+        # than an absolute distance (see circuit_info.py), so they scale to
+        # this specific lap's own integrated distance automatically.
+        if corners and lap_distance:
+            corner_distances = [c["fraction"] * lap_distance for c in corners]
+            for ax in axes:
+                ax.vlines(
+                    corner_distances, *ax.get_ylim(),
+                    linestyles="dotted", colors="grey", linewidth=0.8, alpha=0.6,
+                )
+            axes[-1].set_xticks(corner_distances)
+            axes[-1].set_xticklabels(
+                [f"{c['number']}{c['letter']}" for c in corners], fontsize=7
+            )
+            axes[-1].set_xlabel("Corner")
+        else:
+            axes[-1].set_xlabel("Distance into lap (m)")
+
         axes[0].legend(loc="upper right", fontsize=7, ncol=min(len(drivers), 4))
+        lap_numbers_used = set(info["lap_number_by_driver"].values())
+        lap_label = f"Lap {lap_numbers_used.pop()}" if len(lap_numbers_used) == 1 else "Various laps"
         self.telemetry_figure.suptitle(
-            f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Lap {info['lap_number']}"
+            f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - {lap_label}"
         )
         self.telemetry_figure.tight_layout()
         self.telemetry_canvas.draw_idle()
+
+    # ---- Race Trace plotting ------------------------------------------------
+
+    def _on_race_trace_plot_clicked(self) -> None:
+        session_key = self.session_combo.currentData()
+        if session_key is None:
+            return
+
+        checked_drivers = self._checked_drivers()
+        if not checked_drivers:
+            QMessageBox.information(self, "No drivers selected", "Tick at least one driver to plot.")
+            return
+
+        if session_key in self._laps_by_session:
+            self._draw_race_trace(self._laps_by_session[session_key], checked_drivers)
+        else:
+            self._run_async(
+                api.get_laps,
+                lambda laps: self._on_race_trace_laps_ready(session_key, laps, checked_drivers),
+                "Loading lap data...",
+                session_key=session_key,
+            )
+
+    def _on_race_trace_laps_ready(self, session_key: int, laps: list[dict], checked_drivers: list[dict]) -> None:
+        self._laps_by_session[session_key] = laps
+        self._draw_race_trace(laps, checked_drivers)
+
+    @staticmethod
+    def _gaps_to_leader(all_laps: list[dict]) -> dict[int, dict[int, float]]:
+        """
+        driver_number -> {lap_number: seconds behind the leader}, computed
+        from the *whole field's* laps (not just the drivers being plotted),
+        so the actual race leader is used even if they're not ticked.
+
+        Each driver's cumulative race time through a lap is the running
+        total of their own lap_duration values (pit stops included - a
+        stop should show up as losing time, not get smoothed away); the
+        leader at a given lap number is whichever driver has the smallest
+        cumulative time there. A driver's series stops at the first lap
+        missing timing data (retirement, no time set, etc.) rather than
+        guessing.
+        """
+        laps_by_driver: dict[int, list[dict]] = {}
+        for lap in all_laps:
+            driver_number = lap.get("driver_number")
+            if driver_number is not None:
+                laps_by_driver.setdefault(driver_number, []).append(lap)
+
+        cumulative_by_driver: dict[int, dict[int, float]] = {}
+        for driver_number, laps in laps_by_driver.items():
+            laps_sorted = sorted(laps, key=lambda lap: lap.get("lap_number", 0))
+            cumulative: dict[int, float] = {}
+            total = 0.0
+            for lap in laps_sorted:
+                duration = lap.get("lap_duration")
+                lap_number = lap.get("lap_number")
+                if duration is None or lap_number is None:
+                    break
+                total += duration
+                cumulative[lap_number] = total
+            cumulative_by_driver[driver_number] = cumulative
+
+        leader_time_by_lap: dict[int, float] = {}
+        for cumulative in cumulative_by_driver.values():
+            for lap_number, total in cumulative.items():
+                if lap_number not in leader_time_by_lap or total < leader_time_by_lap[lap_number]:
+                    leader_time_by_lap[lap_number] = total
+
+        return {
+            driver_number: {
+                lap_number: total - leader_time_by_lap[lap_number]
+                for lap_number, total in cumulative.items()
+            }
+            for driver_number, cumulative in cumulative_by_driver.items()
+        }
+
+    def _draw_race_trace(self, all_laps: list[dict], drivers: list[dict]) -> None:
+        gaps_by_driver = self._gaps_to_leader(all_laps)
+
+        self.race_trace_ax.clear()
+        plotted_any = False
+        driver_colours = self._driver_plot_colours(drivers)
+
+        for driver in drivers:
+            driver_number = driver["driver_number"]
+            gaps = gaps_by_driver.get(driver_number)
+            if not gaps:
+                continue
+
+            lap_numbers = sorted(gaps.keys())
+            # Negated so the leader sits flat at zero and everyone else
+            # sinks below it in proportion to how far behind they are.
+            values = [-gaps[lap_number] for lap_number in lap_numbers]
+
+            plotted_any = True
+            self.race_trace_ax.plot(
+                lap_numbers, values,
+                marker="o", markersize=3, linewidth=1.5,
+                color=driver_colours[driver_number], label=driver.get("name_acronym", str(driver_number)),
+            )
+
+        if not plotted_any:
+            self.race_trace_ax.text(
+                0.5, 0.5, "No data for this selection",
+                ha="center", va="center", transform=self.race_trace_ax.transAxes, color="gray",
+            )
+            self.race_trace_ax.set_xticks([])
+            self.race_trace_ax.set_yticks([])
+            self.race_trace_canvas.draw_idle()
+            return
+
+        self.race_trace_ax.set_xlabel("Lap")
+        self.race_trace_ax.set_ylabel("Gap to leader (s)")
+        self.race_trace_ax.set_title(
+            f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Race Trace"
+        )
+        self.race_trace_ax.grid(True, alpha=0.3)
+        self.race_trace_ax.legend(loc="best", fontsize=8, ncol=2)
+
+        self.race_trace_figure.tight_layout()
+        self.race_trace_canvas.draw_idle()
 
 
 def main() -> None:

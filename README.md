@@ -19,8 +19,20 @@ lap-by-lap for whichever drivers you pick.
      travelled since the lap started (so you can compare drivers
      corner-for-corner) rather than by elapsed time. OpenF1 has no
      distance channel, so it's derived by integrating each car's speed
-     over time. Note: OpenF1's free tier has no steering-angle channel,
-     so that's the one thing you can't compare here.
+     over time. When corner data is available for the circuit (see
+     below), the x-axis shows corner numbers instead of raw metres. Note:
+     OpenF1's free tier has no steering-angle channel, so that's the one
+     thing you can't compare here.
+   - **Race Trace** — click **Plot Race Trace** to see each ticked
+     driver's gap to the race leader, lap by lap (leader flat at zero,
+     everyone else sinking below it in proportion to how far behind they
+     are). The leader is whoever's actually ahead on track that lap, even
+     if they're not one of the ticked drivers. Each driver's gap is their
+     own cumulative race time (the running total of their lap times,
+     including any pit stops - a stop is *supposed* to show up as a dip)
+     minus the leader's. Most useful for Race/Sprint sessions, where lap
+     numbers line up across the field; Practice/Qualifying laps aren't
+     sequential in the same way, so it's not very meaningful there.
 
 Data only goes back to the 2023 season (that's what OpenF1 provides for
 free without authentication) — the year list starts there.
@@ -61,7 +73,14 @@ before `python main.py`.
   (`meetings`, `sessions`, `drivers`, `laps`, `car_data`). Kept separate
   so you can reuse it or extend it (e.g. add `stints`) without touching
   the UI code.
-- `requirements.txt` — the three packages the app needs.
+- `circuit_info.py` — looks up each circuit's corner numbers and their
+  position along the lap, from `circuit_corners.json` (see below).
+- `circuit_corners.json` — a bundled, pre-generated table of corner
+  positions per circuit (as a fraction of the lap, 0-1), covering every
+  circuit on the current F1 calendar. Regenerate it with
+  `scripts/generate_circuit_corners.py` if a new circuit shows up or a
+  layout changes and corner numbers stop appearing for it.
+- `requirements.txt` — the packages the app needs.
 
 ## Notes and things worth knowing
 
@@ -86,3 +105,12 @@ before `python main.py`.
 - **Extending it**: the `/laps` endpoint also has `i1_speed`, `i2_speed`,
   and the sector "mini-sector" colour segments if you want to add more
   Lap Summary metrics.
+- **Corner numbers**: sourced from a small bundled file
+  (`circuit_corners.json`) rather than a live lookup, so this is instant
+  and needs no network call or extra dependency - see
+  `scripts/generate_circuit_corners.py`'s docstring for why (in short: the
+  live source, MultiViewer, turned out to be unreliably reachable from
+  some networks, and needed a slow full-session download to calibrate
+  distances). If a circuit isn't in the bundled data (e.g. one that's
+  brand new), the plot just falls back to a plain "Distance into lap (m)"
+  axis.
