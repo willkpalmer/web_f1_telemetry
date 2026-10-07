@@ -11,6 +11,7 @@ Run with:  python main.py
 from __future__ import annotations
 
 import colorsys
+import statistics
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -86,6 +87,10 @@ TYRE_COMPOUNDS: dict[str, tuple[str, str]] = {
     "WET": ("#0067ad", "Wet"),
 }
 UNKNOWN_COMPOUND = ("#9e9e9e", "Unknown")
+
+# A lap more than this fraction slower or faster than the driver's median
+# lap is treated as an outlier (safety car, red flag, pit in-lap, ...).
+TYRE_OUTLIER_THRESHOLD = 0.15
 
 
 def _shift_lightness(hex_colour: str, index: int) -> str:
@@ -411,6 +416,12 @@ class MainWindow(QMainWindow):
         self.tyre_exclude_pit_laps_check.setChecked(True)
         controls_layout.addWidget(self.tyre_exclude_pit_laps_check)
 
+        self.tyre_exclude_outliers_check = QCheckBox(
+            f"Exclude outlier laps (±{TYRE_OUTLIER_THRESHOLD:.0%} of median)"
+        )
+        self.tyre_exclude_outliers_check.setChecked(True)
+        controls_layout.addWidget(self.tyre_exclude_outliers_check)
+
         self.tyre_invert_time_axis_check = QCheckBox("Faster laps plotted higher")
         controls_layout.addWidget(self.tyre_invert_time_axis_check)
 
@@ -428,7 +439,6 @@ class MainWindow(QMainWindow):
         self.tyre_figure = Figure(figsize=(7, 5))
         self.tyre_canvas = FigureCanvas(self.tyre_figure)
         self.tyre_toolbar = NavigationToolbar(self.tyre_canvas, plot_panel)
-        self.tyre_ax = self.tyre_figure.add_subplot(111)
         self._reset_tyre_placeholder()
         plot_layout.addWidget(self.tyre_toolbar)
         plot_layout.addWidget(self.tyre_canvas, stretch=1)
@@ -468,13 +478,14 @@ class MainWindow(QMainWindow):
         self.race_trace_canvas.draw_idle()
 
     def _reset_tyre_placeholder(self) -> None:
-        self.tyre_ax.clear()
-        self.tyre_ax.text(
+        self.tyre_figure.clear()
+        ax = self.tyre_figure.add_subplot(111)
+        ax.text(
             0.5, 0.5, "Select a session and up to four drivers, then click Plot Lap Times",
-            ha="center", va="center", transform=self.tyre_ax.transAxes, color="gray",
+            ha="center", va="center", transform=ax.transAxes, color="gray",
         )
-        self.tyre_ax.set_xticks([])
-        self.tyre_ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_yticks([])
         self.tyre_canvas.draw_idle()
 
     # ---- Generic async helpers --------------------------------------------
@@ -1482,20 +1493,27 @@ class MainWindow(QMainWindow):
                 return compound if compound in TYRE_COMPOUNDS else "UNKNOWN"
         return "UNKNOWN"
 
+    @staticmethod
+    def _without_outliers(laps: list[dict]) -> list[dict]:
+        """Drops laps whose time is TYRE_OUTLIER_THRESHOLD or more away
+        from the median of `laps` (one driver's laps), in either direction."""
+        if not laps:
+            return laps
+        median = statistics.median(lap["lap_duration"] for lap in laps)
+        return [
+            lap for lap in laps
+            if abs(lap["lap_duration"] - median) < TYRE_OUTLIER_THRESHOLD * median
+        ]
+
     def _draw_tyre_strategy(self, all_laps: list[dict], stints: list[dict], drivers: list[dict]) -> None:
         exclude_pit_laps = self.tyre_exclude_pit_laps_check.isChecked()
+        exclude_outliers = self.tyre_exclude_outliers_check.isChecked()
 
-        ax = self.tyre_ax
-        ax.clear()
-        driver_colours = self._driver_plot_colours(drivers)
-        driver_handles = []
-        compounds_used: set[str] = set()
-
+        # Work out each driver's laps first, so drivers with nothing to
+        # show don't get an empty panel.
+        laps_by_driver: list[tuple[dict, list[dict]]] = []
         for driver in drivers:
             driver_number = driver["driver_number"]
-            colour = driver_colours[driver_number]
-            driver_stints = [s for s in stints if s.get("driver_number") == driver_number]
-
             driver_laps = [
                 lap for lap in all_laps
                 if lap.get("driver_number") == driver_number
@@ -1504,19 +1522,38 @@ class MainWindow(QMainWindow):
             ]
             if exclude_pit_laps:
                 driver_laps = [lap for lap in driver_laps if not lap.get("is_pit_out_lap")]
-            if not driver_laps:
-                continue
-            driver_laps.sort(key=lambda lap: lap["lap_number"])
+            if exclude_outliers:
+                driver_laps = self._without_outliers(driver_laps)
+            if driver_laps:
+                driver_laps.sort(key=lambda lap: lap["lap_number"])
+                laps_by_driver.append((driver, driver_laps))
+
+        self.tyre_figure.clear()
+        if not laps_by_driver:
+            ax = self.tyre_figure.add_subplot(111)
+            ax.text(
+                0.5, 0.5, "No data for this selection",
+                ha="center", va="center", transform=ax.transAxes, color="gray",
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            self.tyre_canvas.draw_idle()
+            return
+
+        # One panel per driver, sharing both axes so pace and lap numbers
+        # line up when reading down the stack.
+        axes = self.tyre_figure.subplots(len(laps_by_driver), 1, sharex=True, sharey=True, squeeze=False)[:, 0]
+        driver_colours = self._driver_plot_colours(drivers)
+        compounds_used: set[str] = set()
+
+        for ax, (driver, driver_laps) in zip(axes, laps_by_driver):
+            driver_number = driver["driver_number"]
+            colour = driver_colours[driver_number]
+            driver_stints = [s for s in stints if s.get("driver_number") == driver_number]
 
             lap_numbers = [lap["lap_number"] for lap in driver_laps]
             values = [lap["lap_duration"] for lap in driver_laps]
-
-            (line,) = ax.plot(
-                lap_numbers, values,
-                linewidth=1.5, color=colour, zorder=2,
-                label=driver.get("name_acronym", str(driver_number)),
-            )
-            driver_handles.append(line)
+            ax.plot(lap_numbers, values, linewidth=1.5, color=colour, zorder=2)
 
             # One scatter per compound so each gets a single fill colour.
             laps_by_compound: dict[str, tuple[list[int], list[float]]] = {}
@@ -1533,29 +1570,15 @@ class MainWindow(QMainWindow):
                 )
                 compounds_used.add(compound)
 
-        if not driver_handles:
-            ax.text(
-                0.5, 0.5, "No data for this selection",
-                ha="center", va="center", transform=ax.transAxes, color="gray",
-            )
-            ax.set_xticks([])
-            ax.set_yticks([])
-            self.tyre_canvas.draw_idle()
-            return
+            ax.set_ylabel(f"{driver.get('name_acronym', driver_number)}\nLap time (s)", fontsize=9)
+            ax.grid(True, alpha=0.3)
 
-        ax.set_xlabel("Lap")
-        ax.set_ylabel("Lap time (s)")
-        ax.set_title(
-            f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Lap Times by Tyre"
-        )
-        ax.grid(True, alpha=0.3)
+        # Shared y-axis, so inverting one inverts them all.
+        if self.tyre_invert_time_axis_check.isChecked():
+            axes[0].invert_yaxis()
 
-        # Both legends sit outside the axes so they never cover laps.
-        driver_legend = ax.legend(
-            handles=driver_handles, title="Driver", fontsize=8,
-            loc="upper left", bbox_to_anchor=(1.01, 1.0),
-        )
-        ax.add_artist(driver_legend)
+        axes[-1].set_xlabel("Lap")
+
         compound_order = list(TYRE_COMPOUNDS) + ["UNKNOWN"]
         compound_handles = [
             Line2D(
@@ -1565,17 +1588,17 @@ class MainWindow(QMainWindow):
             )
             for c in compound_order if c in compounds_used
         ]
-        ax.legend(
+        # Outside the axes so it never covers laps.
+        axes[0].legend(
             handles=compound_handles, title="Tyre", fontsize=8,
-            loc="lower left", bbox_to_anchor=(1.01, 0.0),
+            loc="upper left", bbox_to_anchor=(1.01, 1.0),
         )
 
-        if self.tyre_invert_time_axis_check.isChecked():
-            ax.invert_yaxis()
-
+        self.tyre_figure.suptitle(
+            f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Lap Times by Tyre"
+        )
         self.tyre_figure.tight_layout()
         self.tyre_canvas.draw_idle()
-
 
 def main() -> None:
     app = QApplication(sys.argv)
