@@ -36,8 +36,7 @@ lap-by-lap for whichever drivers you pick.
      numbers line up across the field; Practice/Qualifying laps aren't
      sequential in the same way, so it's not very meaningful there.
    - **Tyre Strategy** — click **Plot Lap Times** to see each ticked
-     driver's lap
-     times on their own graph (stacked, sharing the same axes so they're
+     driver's lap times on their own graph (stacked, sharing the same axes so they're
      easy to compare), with the graph's background shaded behind each
      lap in the colour of the tyre compound in use (red Soft, yellow
      Medium, grey Hard - really white, but grey to tell it apart from
