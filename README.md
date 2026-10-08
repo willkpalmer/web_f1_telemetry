@@ -36,16 +36,19 @@ lap-by-lap for whichever drivers you pick.
    - **Tyre Strategy** — pick up to four drivers from the tab's own
      driver pickers and click **Plot Lap Times** to see each driver's lap
      times on their own graph (stacked, sharing the same axes so they're
-     easy to compare), with every lap's marker coloured by the tyre
-     compound in use (red Soft, yellow Medium, white Hard, green
-     Intermediate, blue Wet), so you can see stint lengths, pit stops
-     and how pace fades as tyres wear. Compounds come from OpenF1's
-     `/stints` endpoint; laps it has no stint for are shown in grey as
-     "Unknown". "Exclude outlier laps" (on by default) drops any lap that's
-     off that driver's median lap by at least the chosen percentage
-     (default 10%, either slower or faster) - e.g. safety car, red flag or
-     pit in-laps - so they don't squash the scale. Wherever a lap has been
-     left out, the line breaks rather than joining the laps either side.
+     easy to compare), with the graph's background shaded behind each
+     lap in the colour of the tyre compound in use (red Soft, yellow
+     Medium, grey Hard - really white, but grey to tell it apart from
+     excluded laps - green Intermediate, blue Wet), so you can see stint
+     lengths, pit stops and how pace fades as tyres wear. Compounds come
+     from OpenF1's `/stints` endpoint; laps it has no stint for are
+     hatched as "Unknown". "Exclude outlier laps" (on by default) drops
+     any lap that's off that driver's median lap by at least the chosen
+     percentage (default 10%, either slower or faster) - e.g. safety car,
+     red flag or pit in-laps - so they don't squash the scale. Wherever a
+     lap has been left out (including excluded pit out-laps), its
+     background is left white and the line breaks rather than joining
+     the laps either side.
 
 Data only goes back to the 2023 season (that's what OpenF1 provides for
 free without authentication) — the year list starts there.

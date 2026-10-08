@@ -23,7 +23,8 @@ matplotlib.use("QtAgg")  # works with both PyQt and PySide bindings
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from matplotlib.lines import Line2D
+from matplotlib import patheffects
+from matplotlib.patches import Patch
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
@@ -77,17 +78,21 @@ FIRST_HISTORICAL_YEAR = 2023
 # compound markers on each line stay readable.
 MAX_TYRE_STRATEGY_DRIVERS = 4
 
-# OpenF1 compound name -> (marker fill colour, legend label), using the
-# colours Pirelli paints on the tyre sidewalls. Hard is white, so every
-# compound marker gets a dark edge to stay visible on a white background.
+# OpenF1 compound name -> (background shading colour, legend label): pale
+# versions of the colours Pirelli paints on the tyre sidewalls, so the
+# lap-time line stays readable on top. Hard is really white, but excluded
+# laps are left white, so Hard is shaded light grey to tell them apart.
 TYRE_COMPOUNDS: dict[str, tuple[str, str]] = {
-    "SOFT": ("#e8002d", "Soft"),
-    "MEDIUM": ("#ffd12e", "Medium"),
-    "HARD": ("#f4f4f4", "Hard"),
-    "INTERMEDIATE": ("#39b54a", "Intermediate"),
-    "WET": ("#0067ad", "Wet"),
+    "SOFT": ("#f7a8b6", "Soft"),
+    "MEDIUM": ("#ffe58f", "Medium"),
+    "HARD": ("#d6d6d6", "Hard"),
+    "INTERMEDIATE": ("#a9dcaf", "Intermediate"),
+    "WET": ("#9fc3e3", "Wet"),
 }
-UNKNOWN_COMPOUND = ("#9e9e9e", "Unknown")
+# Laps with no stint data are hatched rather than filled, so they don't
+# look like an excluded (white) lap or any real compound.
+UNKNOWN_COMPOUND = ("#ffffff", "Unknown")
+UNKNOWN_COMPOUND_HATCH = "///"
 
 # Default for the Tyre Strategy tab's outlier threshold: a lap this many
 # percent or more slower or faster than the driver's median lap is treated
@@ -1516,6 +1521,15 @@ class MainWindow(QMainWindow):
             if abs(lap["lap_duration"] - median) < threshold * median
         ]
 
+    @staticmethod
+    def _compound_patch_style(compound: str) -> dict[str, Any]:
+        """facecolor (and hatch, for unknown laps) to shade a compound with."""
+        style: dict[str, Any] = {"facecolor": TYRE_COMPOUNDS.get(compound, UNKNOWN_COMPOUND)[0]}
+        if compound not in TYRE_COMPOUNDS:
+            style["hatch"] = UNKNOWN_COMPOUND_HATCH
+            style["edgecolor"] = "#b0b0b0"  # hatch lines take the edge colour
+        return style
+
     def _draw_tyre_strategy(self, all_laps: list[dict], stints: list[dict], drivers: list[dict]) -> None:
         exclude_pit_laps = self.tyre_exclude_pit_laps_check.isChecked()
         exclude_outliers = self.tyre_exclude_outliers_check.isChecked()
@@ -1576,25 +1590,32 @@ class MainWindow(QMainWindow):
                     line_y.append(float("nan"))
                 line_x.append(lap_number)
                 line_y.append(value)
-            ax.plot(line_x, line_y, linewidth=1.5, color=colour, zorder=2)
+            # A white halo keeps the driver-coloured line readable on any
+            # compound's shading (e.g. a red Ferrari line on Soft).
+            ax.plot(
+                line_x, line_y, linewidth=1.8, color=colour, zorder=3,
+                path_effects=[patheffects.withStroke(linewidth=3.5, foreground="white")],
+            )
 
-            # One scatter per compound so each gets a single fill colour.
-            laps_by_compound: dict[str, tuple[list[int], list[float]]] = {}
-            for lap_number, value in zip(lap_numbers, values):
+            # Shade each plotted lap's slot (lap - 0.5 to lap + 0.5) in its
+            # compound's colour, merging consecutive laps on the same
+            # compound into one band. Excluded or missing laps get no band,
+            # so they're left white.
+            bands: list[list[Any]] = []  # [compound, first_lap, last_lap]
+            for lap_number in lap_numbers:
                 compound = self._compound_for_lap(driver_stints, lap_number)
-                xs, ys = laps_by_compound.setdefault(compound, ([], []))
-                xs.append(lap_number)
-                ys.append(value)
-
-            for compound, (xs, ys) in laps_by_compound.items():
-                fill = TYRE_COMPOUNDS.get(compound, UNKNOWN_COMPOUND)[0]
-                ax.scatter(
-                    xs, ys, s=30, color=fill, edgecolors="#333333", linewidths=0.8, zorder=3,
-                )
                 compounds_used.add(compound)
+                if bands and bands[-1][0] == compound and bands[-1][2] == lap_number - 1:
+                    bands[-1][2] = lap_number
+                else:
+                    bands.append([compound, lap_number, lap_number])
+
+            for compound, first_lap, last_lap in bands:
+                ax.axvspan(first_lap - 0.5, last_lap + 0.5, linewidth=0, zorder=0, **self._compound_patch_style(compound))
 
             ax.set_ylabel(f"{driver.get('name_acronym', driver_number)}\nLap time (s)", fontsize=9)
-            ax.grid(True, alpha=0.3)
+            ax.grid(True, alpha=0.3, color="#555555", zorder=1)
+            ax.set_axisbelow(False)
 
         # Shared y-axis, so inverting one inverts them all.
         if self.tyre_invert_time_axis_check.isChecked():
@@ -1604,23 +1625,27 @@ class MainWindow(QMainWindow):
 
         compound_order = list(TYRE_COMPOUNDS) + ["UNKNOWN"]
         compound_handles = [
-            Line2D(
-                [], [], linestyle="none", marker="o", markersize=7,
-                markerfacecolor=TYRE_COMPOUNDS.get(c, UNKNOWN_COMPOUND)[0], markeredgecolor="#333333",
-                label=TYRE_COMPOUNDS.get(c, UNKNOWN_COMPOUND)[1],
+            Patch(
+                linewidth=0.5, label=TYRE_COMPOUNDS.get(c, UNKNOWN_COMPOUND)[1],
+                **{"edgecolor": "#999999", **self._compound_patch_style(c)},
             )
             for c in compound_order if c in compounds_used
         ]
-        # Outside the axes so it never covers laps.
-        axes[0].legend(
-            handles=compound_handles, title="Tyre", fontsize=8,
-            loc="upper left", bbox_to_anchor=(1.01, 1.0),
+        compound_handles.append(
+            Patch(facecolor="white", edgecolor="#999999", linewidth=0.5, label="Excluded")
+        )
+        # A figure-level legend in a strip reserved on the right, so it
+        # never covers laps and isn't tied to the (possibly short) top panel.
+        legend = self.tyre_figure.legend(
+            handles=compound_handles, title="Tyre", fontsize=8, loc="upper right",
         )
 
         self.tyre_figure.suptitle(
             f"{self.meeting_combo.currentText()} - {self.session_combo.currentText()} - Lap Times by Tyre"
         )
-        self.tyre_figure.tight_layout()
+        self.tyre_canvas.draw()  # needed to measure the legend's width
+        legend_width = legend.get_window_extent().width / self.tyre_figure.bbox.width
+        self.tyre_figure.tight_layout(rect=(0, 0, 1 - legend_width - 0.01, 1))
         self.tyre_canvas.draw_idle()
 
 def main() -> None:
