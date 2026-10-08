@@ -74,9 +74,10 @@ TELEMETRY_CHANNELS: dict[str, tuple[str, str]] = {
 
 FIRST_HISTORICAL_YEAR = 2023
 
-# The Tyre Strategy tab compares at most this many drivers, so the
-# compound markers on each line stay readable.
-MAX_TYRE_STRATEGY_DRIVERS = 4
+# Most drivers that can be ticked at once, on every tab - beyond this the
+# charts (especially Tyre Strategy's one-panel-per-driver stack) get too
+# crowded to read.
+MAX_SELECTED_DRIVERS = 6
 
 # OpenF1 compound name -> (background shading colour, legend label): pale
 # versions of the colours Pirelli paints on the tyre sidewalls, so the
@@ -245,12 +246,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.driver_list, stretch=1)
 
         select_row = QHBoxLayout()
-        select_all_btn = QPushButton("All")
-        select_all_btn.clicked.connect(lambda: self._set_all_drivers_checked(True))
-        select_none_btn = QPushButton("None")
-        select_none_btn.clicked.connect(lambda: self._set_all_drivers_checked(False))
-        select_row.addWidget(select_all_btn)
-        select_row.addWidget(select_none_btn)
+        # No "All" button: at most MAX_SELECTED_DRIVERS can be ticked.
+        self.driver_count_label = QLabel()
+        select_row.addWidget(self.driver_count_label, stretch=1)
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self._clear_driver_checks)
+        select_row.addWidget(clear_btn)
         layout.addLayout(select_row)
 
         return panel
@@ -403,21 +404,11 @@ class MainWindow(QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
 
         blurb = QLabel(
-            f"Lap times for up to {MAX_TYRE_STRATEGY_DRIVERS} drivers, with "
-            "each lap's marker coloured by the tyre compound in use."
+            "Each ticked driver's lap times on their own graph, with the "
+            "background shaded by the tyre compound in use."
         )
         blurb.setWordWrap(True)
         controls_layout.addWidget(blurb)
-
-        controls_layout.addWidget(QLabel("<b>Drivers</b>"))
-        # Picked here rather than from the shared checklist, so the
-        # four-driver limit is built into the controls themselves.
-        self.tyre_driver_combos: list[QComboBox] = []
-        for _ in range(MAX_TYRE_STRATEGY_DRIVERS):
-            combo = QComboBox()
-            combo.addItem("-- None --", None)
-            controls_layout.addWidget(combo)
-            self.tyre_driver_combos.append(combo)
 
         self.tyre_exclude_pit_laps_check = QCheckBox("Exclude pit out laps")
         self.tyre_exclude_pit_laps_check.setChecked(True)
@@ -560,10 +551,11 @@ class MainWindow(QMainWindow):
         self._clear_combo(self.lap_combo, "-- Select session first --")
         self._clear_per_driver_lap_rows()
         self.driver_list.clear()
+        self._update_driver_count_label()
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
         self.race_trace_plot_button.setEnabled(False)
-        self._populate_tyre_driver_combos([])
+        self.tyre_plot_button.setEnabled(False)
         if year is None:
             return
         self._run_async(
@@ -586,10 +578,11 @@ class MainWindow(QMainWindow):
         self._clear_combo(self.lap_combo, "-- Select session first --")
         self._clear_per_driver_lap_rows()
         self.driver_list.clear()
+        self._update_driver_count_label()
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
         self.race_trace_plot_button.setEnabled(False)
-        self._populate_tyre_driver_combos([])
+        self.tyre_plot_button.setEnabled(False)
         if meeting_key is None:
             return
 
@@ -632,12 +625,13 @@ class MainWindow(QMainWindow):
     def _on_session_changed(self) -> None:
         session_key = self.session_combo.currentData()
         self.driver_list.clear()
+        self._update_driver_count_label()
         self._clear_combo(self.lap_combo, "-- Select lap --")
         self._clear_per_driver_lap_rows()
         self.plot_button.setEnabled(False)
         self.telemetry_plot_button.setEnabled(False)
         self.race_trace_plot_button.setEnabled(False)
-        self._populate_tyre_driver_combos([])
+        self.tyre_plot_button.setEnabled(False)
         if session_key is None:
             return
 
@@ -695,7 +689,18 @@ class MainWindow(QMainWindow):
         if not linked:
             self._rebuild_per_driver_lap_rows()
 
-    def _on_driver_checklist_changed(self, _item: QListWidgetItem) -> None:
+    def _on_driver_checklist_changed(self, item: QListWidgetItem) -> None:
+        if item.checkState() == Qt.Checked and len(self._checked_drivers()) > MAX_SELECTED_DRIVERS:
+            # Undo the tick that went over the limit. Signals are blocked so
+            # this doesn't re-enter the handler.
+            self.driver_list.blockSignals(True)
+            item.setCheckState(Qt.Unchecked)
+            self.driver_list.blockSignals(False)
+            self.status_bar.showMessage(
+                f"At most {MAX_SELECTED_DRIVERS} drivers can be selected - untick one first.", 5000
+            )
+            return
+        self._update_driver_count_label()
         if not self.link_laps_check.isChecked():
             self._rebuild_per_driver_lap_rows()
 
@@ -913,7 +918,14 @@ class MainWindow(QMainWindow):
         if self.session_combo.currentData() != session_key:
             return
 
-        drivers_sorted = sorted(drivers, key=lambda d: d.get("driver_number", 0))
+        # Grouped by team, then alphabetically by driver within each team.
+        drivers_sorted = sorted(
+            drivers,
+            key=lambda d: (
+                (d.get("team_name") or "~").casefold(),  # "~" sorts unknown teams last
+                (d.get("name_acronym") or "").casefold(),
+            ),
+        )
         self.driver_list.clear()
         for driver in drivers_sorted:
             label = f"{driver.get('name_acronym', '?')} - {driver.get('team_name', 'Unknown')}"
@@ -927,24 +939,8 @@ class MainWindow(QMainWindow):
 
         self.plot_button.setEnabled(self.driver_list.count() > 0)
         self.race_trace_plot_button.setEnabled(self.driver_list.count() > 0)
-        self._populate_tyre_driver_combos(drivers_sorted)
-
-    def _populate_tyre_driver_combos(self, drivers_sorted: list[dict]) -> None:
-        """Fills the Tyre Strategy tab's driver pickers with this session's
-        drivers, all starting on "-- None --"."""
-        for combo in self.tyre_driver_combos:
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem("-- None --", None)
-            for driver in drivers_sorted:
-                colour_hex = driver.get("team_colour") or "888888"
-                combo.addItem(
-                    self._colour_swatch(f"#{colour_hex}"),
-                    f"{driver.get('name_acronym', '?')} - {driver.get('team_name', 'Unknown')}",
-                    driver,
-                )
-            combo.blockSignals(False)
-        self.tyre_plot_button.setEnabled(bool(drivers_sorted))
+        self.tyre_plot_button.setEnabled(self.driver_list.count() > 0)
+        self._update_driver_count_label()
 
     @staticmethod
     def _colour_swatch(colour: str) -> QIcon:
@@ -973,10 +969,12 @@ class MainWindow(QMainWindow):
             colours[driver["driver_number"]] = _shift_lightness(base, index)
         return colours
 
-    def _set_all_drivers_checked(self, checked: bool) -> None:
-        state = Qt.Checked if checked else Qt.Unchecked
+    def _clear_driver_checks(self) -> None:
         for i in range(self.driver_list.count()):
-            self.driver_list.item(i).setCheckState(state)
+            self.driver_list.item(i).setCheckState(Qt.Unchecked)
+
+    def _update_driver_count_label(self) -> None:
+        self.driver_count_label.setText(f"{len(self._checked_drivers())} / {MAX_SELECTED_DRIVERS} selected")
 
     @staticmethod
     def _clear_combo(combo: QComboBox, placeholder: str) -> None:
@@ -1442,27 +1440,14 @@ class MainWindow(QMainWindow):
 
     # ---- Tyre Strategy plotting ---------------------------------------------
 
-    def _selected_tyre_drivers(self) -> list[dict]:
-        """The drivers picked in the Tyre Strategy tab, in picker order,
-        with blanks and repeats of the same driver dropped."""
-        drivers: list[dict] = []
-        seen: set[int] = set()
-        for combo in self.tyre_driver_combos:
-            driver = combo.currentData()
-            if driver is None or driver["driver_number"] in seen:
-                continue
-            seen.add(driver["driver_number"])
-            drivers.append(driver)
-        return drivers
-
     def _on_tyre_plot_clicked(self) -> None:
         session_key = self.session_combo.currentData()
         if session_key is None:
             return
 
-        drivers = self._selected_tyre_drivers()
+        drivers = self._checked_drivers()
         if not drivers:
-            QMessageBox.information(self, "No drivers selected", "Pick at least one driver to plot.")
+            QMessageBox.information(self, "No drivers selected", "Tick at least one driver to plot.")
             return
 
         laps = self._laps_by_session.get(session_key)

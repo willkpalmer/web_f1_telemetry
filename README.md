@@ -8,7 +8,9 @@ lap-by-lap for whichever drivers you pick.
 
 1. Pick a **Year**, then a **Grand Prix**, then a **Session** (Practice,
    Qualifying, Sprint, Race, ...).
-2. Tick the drivers/cars you want to compare.
+2. Tick the drivers/cars you want to compare - up to 6 at once, so the
+   charts stay readable. The list is grouped by team, then sorted
+   alphabetically within each team; **Clear** unticks everyone.
 3. Choose a tab:
    - **Lap Summary** — pick a **Metric** (Lap Time, Sector 1/2/3 time, or
      Speed Trap) and click **Plot** to see it graphed lap-by-lap, one
@@ -33,8 +35,8 @@ lap-by-lap for whichever drivers you pick.
      minus the leader's. Most useful for Race/Sprint sessions, where lap
      numbers line up across the field; Practice/Qualifying laps aren't
      sequential in the same way, so it's not very meaningful there.
-   - **Tyre Strategy** — pick up to four drivers from the tab's own
-     driver pickers and click **Plot Lap Times** to see each driver's lap
+   - **Tyre Strategy** — click **Plot Lap Times** to see each ticked
+     driver's lap
      times on their own graph (stacked, sharing the same axes so they're
      easy to compare), with the graph's background shaded behind each
      lap in the colour of the tyre compound in use (red Soft, yellow
