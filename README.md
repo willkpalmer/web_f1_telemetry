@@ -9,8 +9,10 @@ lap-by-lap for whichever drivers you pick.
 1. Pick a **Year**, then a **Grand Prix**, then a **Session** (Practice,
    Qualifying, Sprint, Race, ...).
 2. Tick the drivers/cars you want to compare - up to 6 at once, so the
-   charts stay readable. The list is grouped by team, then sorted
-   alphabetically within each team; **Clear** unticks everyone.
+   charts stay readable. The list is grouped by team, with teams in
+   the order they finished the previous season's Constructors'
+   Championship, and drivers sorted alphabetically within each team;
+   **Clear** unticks everyone.
 3. Choose a tab:
    - **Lap Summary** — pick a **Metric** (Lap Time, Sector 1/2/3 time, or
      Speed Trap) and click **Plot** to see it graphed lap-by-lap, one
@@ -91,6 +93,12 @@ before `python main.py`.
   separate so you can reuse it or extend it without touching the UI code.
 - `circuit_info.py` — looks up each circuit's corner numbers and their
   position along the lap, from `circuit_corners.json` (see below).
+- `team_order.py` — a bundled table of each season's final
+  Constructors' Championship order, used to order teams in the driver
+  list. Add a line for each season once it ends (until then the most
+  recent season in the table is used). It also maps team renames, e.g.
+  AlphaTauri / RB / Racing Bulls, onto the same team, so add any new
+  team name OpenF1 starts using there.
 - `circuit_corners.json` — a bundled, pre-generated table of corner
   positions per circuit (as a fraction of the lap, 0-1), covering every
   circuit on the current F1 calendar. Regenerate it with

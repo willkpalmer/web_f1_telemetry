@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 
 import circuit_info
 import openf1_client as api
+import team_order
 
 # Display name -> (JSON field on the /laps object, y-axis label)
 METRICS: dict[str, tuple[str, str]] = {
@@ -918,11 +919,14 @@ class MainWindow(QMainWindow):
         if self.session_combo.currentData() != session_key:
             return
 
-        # Grouped by team, then alphabetically by driver within each team.
+        # Grouped by team, in the order the teams finished last season's
+        # Constructors' Championship, then alphabetically within each team.
+        meeting = self._meetings_by_key.get(self.meeting_combo.currentData()) or {}
+        season = meeting.get("year") or self.year_combo.currentData()
         drivers_sorted = sorted(
             drivers,
             key=lambda d: (
-                (d.get("team_name") or "~").casefold(),  # "~" sorts unknown teams last
+                team_order.team_sort_key(d.get("team_name"), season),
                 (d.get("name_acronym") or "").casefold(),
             ),
         )
