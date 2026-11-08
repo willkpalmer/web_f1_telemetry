@@ -83,6 +83,10 @@
             <select id="lap"></select>
           </label>
           <div id="per-driver-laps" class="per-driver-laps" hidden></div>
+          <label class="field inline" id="delta-ref-field">
+            <span>Delta reference</span>
+            <select id="delta-ref"></select>
+          </label>
           <fieldset class="channels">
             <legend>Channels</legend>
             <div id="channels" class="channel-list"></div>
@@ -91,7 +95,7 @@
         </div>
         <div class="chart">
           <h2 class="chart-title"></h2>
-          <p class="placeholder">Compare cars through a single lap, aligned by distance travelled so you can read them corner for corner. OpenF1 has no steering-angle channel, so that one can't be shown.</p>
+          <p class="placeholder">Compare cars through a single lap, aligned by distance travelled so you can read them corner for corner. The time-delta panel shows how far each car is ahead of or behind the reference driver at every point of the lap. OpenF1 has no steering-angle channel, so that one can't be shown.</p>
           <div class="plot" hidden></div>
         </div>
       </div>

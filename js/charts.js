@@ -31,6 +31,10 @@ export const TELEMETRY_CHANNELS = {
 // OpenF1 compound -> pale versions of the colours Pirelli paints on the
 // sidewalls, so the lap-time line stays readable on top. Hard is really
 // white, but excluded laps are left blank, so Hard is light grey instead.
+// Pseudo-channel for the telemetry tab's time-delta panel: how far each
+// car is ahead of / behind a reference car at each point of the lap.
+export const DELTA_CHANNEL = "Delta";
+
 export const TYRE_COMPOUNDS = {
   SOFT: { colour: "#f7a8b6", label: "Soft" },
   MEDIUM: { colour: "#ffe58f", label: "Medium" },
@@ -158,7 +162,65 @@ function cumulativeDistance(rowsSorted) {
   return distance;
 }
 
-export function telemetry({ drivers, dataByDriver, channels, corners }) {
+/**
+ * Elapsed time through the lap as a function of how far round it the car
+ * is (as a fraction, 0-1), for the "time delta" panel. Anchored to the
+ * lap's own start time and duration - not just the first/last telemetry
+ * sample, which can be a few hundred ms inside the lap - so a driver's
+ * curve always ends at exactly their lap time. Using a fraction of each
+ * car's own integrated lap distance (rather than raw metres) stops small
+ * integration differences between cars accumulating into a fake gap.
+ */
+function lapTimeline(rows, distance, lap) {
+  if (!lap || !lap.date_start || !lap.lap_duration || !rows.length) return null;
+  const start = parseIsoMs(lap.date_start);
+  const duration = lap.lap_duration;
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  const lead = Math.max(0, (parseIsoMs(first.date) - start) / 1000) * ((first.speed || 0) / 3.6);
+  const tail = Math.max(0, start / 1000 + duration - parseIsoMs(last.date) / 1000) * ((last.speed || 0) / 3.6);
+  const total = lead + distance[distance.length - 1] + tail;
+  if (!(total > 0)) return null;
+
+  const fraction = [0];
+  const time = [0];
+  rows.forEach((row, i) => {
+    const f = (lead + distance[i]) / total;
+    const elapsed = (parseIsoMs(row.date) - start) / 1000;
+    // Keep both strictly increasing (a stationary car adds no distance).
+    if (f > fraction[fraction.length - 1] && f < 1 && elapsed > time[time.length - 1] && elapsed < duration) {
+      fraction.push(f);
+      time.push(elapsed);
+    }
+  });
+  fraction.push(1);
+  time.push(duration);
+  return { fraction, time };
+}
+
+/** Linear interpolation of `ys` at `x` over increasing `xs`. */
+function interpolate(xs, ys, x) {
+  let lo = 0;
+  let hi = xs.length - 1;
+  if (x <= xs[lo]) return ys[lo];
+  if (x >= xs[hi]) return ys[hi];
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid] <= x) lo = mid;
+    else hi = mid;
+  }
+  return ys[lo] + ((ys[hi] - ys[lo]) * (x - xs[lo])) / (xs[hi] - xs[lo]);
+}
+
+const DELTA_SAMPLES = 600;
+
+/** Formats a signed delta: "+0.123 s behind", "0.050 s ahead", "level". */
+function describeDelta(delta) {
+  if (Math.abs(delta) < 0.0005) return "level";
+  return delta > 0 ? `+${delta.toFixed(3)} s behind` : `${(-delta).toFixed(3)} s ahead`;
+}
+
+export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corners, referenceNumber }) {
   const t = theme();
   const colours = driverPlotColours(drivers);
 
@@ -167,7 +229,9 @@ export function telemetry({ drivers, dataByDriver, channels, corners }) {
     const rows = dataByDriver.get(driver.driver_number);
     if (!rows || !rows.length) continue;
     const sorted = [...rows].sort((a, b) => parseIsoMs(a.date) - parseIsoMs(b.date));
-    series.push({ driver, rows: sorted, distance: cumulativeDistance(sorted) });
+    const distance = cumulativeDistance(sorted);
+    const timeline = lapTimeline(sorted, distance, lapByDriver.get(driver.driver_number));
+    series.push({ driver, rows: sorted, distance, timeline });
   }
   if (!series.length) return null;
 
@@ -176,9 +240,51 @@ export function telemetry({ drivers, dataByDriver, channels, corners }) {
   const layout = baseLayout(t, { hovermode: "x unified", margin: { l: 72, r: 16, t: 36, b: 48 } });
   const data = [];
 
+  // The delta reference: the requested driver if they have data, else
+  // the first driver who does.
+  const timed = series.filter((s) => s.timeline);
+  const reference = timed.find((s) => s.driver.driver_number === referenceNumber) || timed[0] || null;
+
   channels.forEach((channel, i) => {
-    const { field, label } = TELEMETRY_CHANNELS[channel];
     const names = axisNames(i);
+
+    if (channel === DELTA_CHANNEL) {
+      const refName = reference ? driverLabel(reference.driver) : "–";
+      layout[names.layout] = axis(t, {
+        domain: domains[i],
+        title: { text: `Gap to ${refName} (s)<br><span style="font-size:10px">ahead ↑ · behind ↓</span>`, font: { size: 11 } },
+        zeroline: true,
+        zerolinecolor: t.muted,
+        zerolinewidth: 1,
+      });
+      if (!reference) return;
+      const fractions = Array.from({ length: DELTA_SAMPLES + 1 }, (_, k) => k / DELTA_SAMPLES);
+      const refTimes = fractions.map((f) => interpolate(reference.timeline.fraction, reference.timeline.time, f));
+      for (const { driver, timeline } of timed) {
+        const name = driverLabel(driver);
+        const isRef = driver === reference.driver;
+        const deltas = fractions.map((f, k) => interpolate(timeline.fraction, timeline.time, f) - refTimes[k]);
+        data.push({
+          type: "scatter",
+          mode: "lines",
+          name,
+          legendgroup: String(driver.driver_number),
+          showlegend: i === 0,
+          x: fractions.map((f) => f * lapDistance),
+          // Negated, like the Race Trace: the reference sits flat at zero
+          // and a slower car sinks below it.
+          y: deltas.map((d) => -d),
+          customdata: deltas.map((d) => (isRef ? "reference" : describeDelta(d))),
+          xaxis: "x",
+          yaxis: names.trace,
+          line: { color: colours.get(driver.driver_number), width: isRef ? 1 : 1.75, dash: isRef ? "dash" : "solid" },
+          hovertemplate: `${name}: %{customdata}<extra></extra>`,
+        });
+      }
+      return;
+    }
+
+    const { field, label } = TELEMETRY_CHANNELS[channel];
     layout[names.layout] = axis(t, {
       domain: domains[i],
       title: { text: label, font: { size: 11 } },

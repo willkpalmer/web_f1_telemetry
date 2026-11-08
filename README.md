@@ -31,7 +31,17 @@ Once Pages is enabled (see below), the app is at
      corner for corner) rather than by elapsed time. OpenF1 has no
      distance channel, so it's derived by integrating each car's speed
      over time. When corner data is available for the circuit, the x-axis
-     shows corner numbers instead of raw metres. OpenF1's free tier has no
+     shows corner numbers instead of raw metres. With per-driver laps,
+     each driver's lap picker lists every lap's time (marking their
+     fastest lap and any pit out-lap) to help you choose.
+     The **Time delta** panel (on by default) is a race trace within the
+     lap: the **Delta reference** driver (the first one you ticked, unless
+     you pick another) sits flat at zero, and every other car is drawn
+     above it where it's ahead at that point of the lap and below where
+     it's behind, ending at the difference in their lap times. Each car's
+     position is taken as a fraction of its own integrated lap distance,
+     so small differences in the distance estimate between cars don't
+     build up into a fake gap. OpenF1's free tier has no
      steering-angle channel, so that's the one thing you can't compare.
    - **Race Trace** — click **Plot Race Trace** to see each ticked
      driver's gap to the race leader, lap by lap (leader flat at zero,

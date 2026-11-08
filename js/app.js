@@ -10,7 +10,7 @@ import * as api from "./api.js";
 import * as charts from "./charts.js";
 import { getCorners } from "./circuitInfo.js";
 import { compareKeys, teamSortKey } from "./teamOrder.js";
-import { driverLabel, formatIsoUtc, parseIsoMs, teamColour } from "./util.js";
+import { driverLabel, formatIsoUtc, formatSeconds, parseIsoMs, teamColour } from "./util.js";
 
 const FIRST_HISTORICAL_YEAR = 2023;
 
@@ -18,7 +18,7 @@ const FIRST_HISTORICAL_YEAR = 2023;
 // (especially Tyre Strategy's one-panel-per-driver stack) get too crowded.
 const MAX_SELECTED_DRIVERS = 6;
 
-const DEFAULT_CHANNELS = ["Speed", "Throttle", "Brake", "Gear"];
+const DEFAULT_CHANNELS = [charts.DELTA_CHANNEL, "Speed", "Throttle", "Brake", "Gear"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -43,6 +43,8 @@ const els = {
   linkLaps: $("link-laps"),
   lap: $("lap"),
   lapField: $("lap-field"),
+  deltaRef: $("delta-ref"),
+  deltaRefField: $("delta-ref-field"),
   perDriverLaps: $("per-driver-laps"),
   channels: $("channels"),
   telemetryPlot: $("telemetry-plot"),
@@ -325,6 +327,22 @@ function updateDriverCount() {
     box.disabled = full && !box.checked;
   }
   els.clearDrivers.disabled = count === 0;
+  renderDeltaReference();
+}
+
+/** The time-delta reference picker lists the ticked drivers in the order
+ * they were ticked, defaulting to the first one, and keeps the user's
+ * choice for as long as that driver stays ticked. */
+function renderDeltaReference() {
+  const previous = selectedNumber(els.deltaRef);
+  const byNumber = new Map(state.drivers.map((d) => [d.driver_number, d]));
+  const ticked = [...state.checked].map((n) => byNumber.get(n)).filter(Boolean);
+  setOptions(
+    els.deltaRef,
+    ticked.length ? null : "Tick drivers first",
+    ticked.map((d) => ({ value: d.driver_number, label: driverLabel(d) }))
+  );
+  if (ticked.some((d) => d.driver_number === previous)) els.deltaRef.value = String(previous);
 }
 
 function clearDrivers() {
@@ -346,6 +364,26 @@ function timedLapNumbers(laps, driverNumber = null) {
     if (isTimedLap(lap) && (driverNumber === null || lap.driver_number === driverNumber)) numbers.add(lap.lap_number);
   }
   return [...numbers].sort((a, b) => a - b);
+}
+
+/** One driver's timed laps, by lap number. */
+function timedLapsForDriver(laps, driverNumber) {
+  return (laps || [])
+    .filter((lap) => isTimedLap(lap) && lap.driver_number === driverNumber)
+    .sort((a, b) => a.lap_number - b.lap_number);
+}
+
+/** Per-driver picker options, labelled with each lap's time, e.g.
+ * "Lap 12 · 1:32.456 (fastest)". */
+function lapOptions(driverLaps) {
+  const fastest = Math.min(...driverLaps.map((lap) => lap.lap_duration));
+  return driverLaps.map((lap) => {
+    const notes = [];
+    if (lap.lap_duration === fastest) notes.push("fastest");
+    if (lap.is_pit_out_lap) notes.push("out lap");
+    const suffix = notes.length ? ` (${notes.join(", ")})` : "";
+    return { value: lap.lap_number, label: `Lap ${lap.lap_number} · ${formatSeconds(lap.lap_duration)}${suffix}` };
+  });
 }
 
 function populateLapPicker(laps) {
@@ -388,14 +426,15 @@ function renderPerDriverLaps() {
   const defaultLap = selectedNumber(els.lap);
   for (const driver of drivers) {
     const number = driver.driver_number;
-    const lapNumbers = timedLapNumbers(state.laps, number);
+    const driverLaps = timedLapsForDriver(state.laps, number);
+    const lapNumbers = driverLaps.map((lap) => lap.lap_number);
 
     const label = document.createElement("label");
     label.className = "field inline";
     const caption = document.createElement("span");
     caption.textContent = driverLabel(driver);
     const select = document.createElement("select");
-    setOptions(select, lapNumbers.length ? "Select lap" : "No timed laps", lapNumbers.map((n) => ({ value: n, label: `Lap ${n}` })));
+    setOptions(select, lapNumbers.length ? "Select lap" : "No timed laps", lapOptions(driverLaps));
 
     const wanted = state.perDriverLap.get(number) ?? defaultLap;
     const chosen = lapNumbers.includes(wanted) ? wanted : lapNumbers[0];
@@ -626,11 +665,14 @@ function plotTelemetry() {
     const laps = await run("Loading lap data…", api.getLaps(sessionKey));
     if (!laps || state.sessionKey !== sessionKey) return;
     const lapIndex = new Map(laps.filter(isTimedLap).map((lap) => [`${lap.driver_number}:${lap.lap_number}`, lap]));
+    const referenceNumber = selectedNumber(els.deltaRef);
 
     const requests = [];
+    const lapInfoByDriver = new Map();
     for (const driver of drivers) {
       const lap = lapIndex.get(`${driver.driver_number}:${lapByDriver.get(driver.driver_number)}`);
       if (!lap) continue; // this driver has no timed lap with that number
+      lapInfoByDriver.set(driver.driver_number, lap);
       const start = parseIsoMs(lap.date_start);
       const from = formatIsoUtc(Math.floor(start));
       const to = formatIsoUtc(Math.ceil(start + lap.lap_duration * 1000));
@@ -653,7 +695,9 @@ function plotTelemetry() {
     const failure = results.find((r) => r.status === "rejected");
     if (failure) showMessage(failure.reason?.message || String(failure.reason), "error");
 
-    render("telemetry", title, () => charts.telemetry({ drivers, dataByDriver, channels, corners }));
+    render("telemetry", title, () =>
+      charts.telemetry({ drivers, dataByDriver, lapByDriver: lapInfoByDriver, channels, corners, referenceNumber })
+    );
   });
 }
 
@@ -742,14 +786,14 @@ function initTabs() {
 
 function populateStaticControls() {
   setOptions(els.metric, null, Object.keys(charts.METRICS).map((m) => ({ value: m, label: m })));
-  for (const name of Object.keys(charts.TELEMETRY_CHANNELS)) {
+  for (const name of [charts.DELTA_CHANNEL, ...Object.keys(charts.TELEMETRY_CHANNELS)]) {
     const label = document.createElement("label");
     label.className = "check";
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = name;
     box.checked = DEFAULT_CHANNELS.includes(name);
-    label.append(box, ` ${name}`);
+    label.append(box, ` ${name === charts.DELTA_CHANNEL ? "Time delta" : name}`);
     els.channels.append(label);
   }
 }
@@ -776,6 +820,10 @@ function init() {
   els.driverList.addEventListener("change", onDriverToggled);
   els.clearDrivers.addEventListener("click", clearDrivers);
   els.linkLaps.addEventListener("change", onLinkLapsToggled);
+  const deltaBox = els.channels.querySelector(`input[value="${charts.DELTA_CHANNEL}"]`);
+  const syncDeltaRef = () => (els.deltaRefField.hidden = !deltaBox.checked);
+  deltaBox.addEventListener("change", syncDeltaRef);
+  syncDeltaRef();
   els.tyreExcludeOutliers.addEventListener("change", () => {
     els.tyreOutlierPercent.disabled = !els.tyreExcludeOutliers.checked;
   });
