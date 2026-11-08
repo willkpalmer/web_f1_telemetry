@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenF1 Lap Viewer</title>
+  <meta name="description" content="Compare Formula 1 lap times, car telemetry, race gaps and tyre strategy from the free OpenF1 API.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d6342c'/%3E%3Cpath d='M6 22 L12 14 L17 18 L26 8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"
+          integrity="sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7"
+          crossorigin="anonymous"></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>OpenF1 Lap Viewer</h1>
+    <p>Historical Formula 1 timing and telemetry, 2023 onwards</p>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar" aria-label="Session and driver selection">
+      <label class="field">
+        <span>Year</span>
+        <select id="year"></select>
+      </label>
+      <label class="field">
+        <span>Grand Prix</span>
+        <select id="meeting"><option value="">Select Grand Prix</option></select>
+      </label>
+      <label class="field">
+        <span>Session</span>
+        <select id="session"><option value="">Select session</option></select>
+      </label>
+
+      <fieldset class="drivers">
+        <legend>Drivers</legend>
+        <ul id="driver-list" class="driver-list"></ul>
+        <div class="drivers-footer">
+          <span id="driver-count" class="muted"></span>
+          <button type="button" id="clear-drivers" class="button secondary">Clear</button>
+        </div>
+      </fieldset>
+    </aside>
+
+    <section class="workspace">
+      <div class="tabs" role="tablist" aria-label="Charts">
+        <button type="button" role="tab" id="tab-summary" data-tab="summary" aria-controls="panel-summary">Lap Summary</button>
+        <button type="button" role="tab" id="tab-telemetry" data-tab="telemetry" aria-controls="panel-telemetry">Car Telemetry</button>
+        <button type="button" role="tab" id="tab-trace" data-tab="trace" aria-controls="panel-trace">Race Trace</button>
+        <button type="button" role="tab" id="tab-tyres" data-tab="tyres" aria-controls="panel-tyres">Tyre Strategy</button>
+      </div>
+
+      <div id="message" class="message" role="alert" hidden>
+        <span id="message-text"></span>
+        <button type="button" id="message-close" class="message-close" aria-label="Dismiss">×</button>
+      </div>
+
+      <!-- Lap Summary -->
+      <div class="panel" id="panel-summary" role="tabpanel" aria-labelledby="tab-summary">
+        <div class="controls">
+          <label class="field inline">
+            <span>Metric</span>
+            <select id="metric"></select>
+          </label>
+          <label class="check"><input type="checkbox" id="summary-exclude-pit" checked> Exclude pit out laps</label>
+          <label class="check"><input type="checkbox" id="summary-invert"> Faster laps plotted higher</label>
+          <button type="button" id="summary-plot" class="button primary">Plot</button>
+        </div>
+        <div class="chart">
+          <h2 class="chart-title"></h2>
+          <p class="placeholder">Pick a session and drivers, then click <strong>Plot</strong> to graph the chosen metric lap by lap.</p>
+          <div class="plot" hidden></div>
+        </div>
+      </div>
+
+      <!-- Car Telemetry -->
+      <div class="panel" id="panel-telemetry" role="tabpanel" aria-labelledby="tab-telemetry" hidden>
+        <div class="controls">
+          <label class="check"><input type="checkbox" id="link-laps" checked> Same lap for all drivers</label>
+          <label class="field inline" id="lap-field">
+            <span>Lap</span>
+            <select id="lap"></select>
+          </label>
+          <div id="per-driver-laps" class="per-driver-laps" hidden></div>
+          <fieldset class="channels">
+            <legend>Channels</legend>
+            <div id="channels" class="channel-list"></div>
+          </fieldset>
+          <button type="button" id="telemetry-plot" class="button primary">Plot Telemetry</button>
+        </div>
+        <div class="chart">
+          <h2 class="chart-title"></h2>
+          <p class="placeholder">Compare cars through a single lap, aligned by distance travelled so you can read them corner for corner. OpenF1 has no steering-angle channel, so that one can't be shown.</p>
+          <div class="plot" hidden></div>
+        </div>
+      </div>
+
+      <!-- Race Trace -->
+      <div class="panel" id="panel-trace" role="tabpanel" aria-labelledby="tab-trace" hidden>
+        <div class="controls">
+          <p class="hint">Each driver's gap to the race leader, lap by lap. The leader is whoever is actually ahead on track, even if they aren't ticked. Most useful for Race and Sprint sessions.</p>
+          <button type="button" id="trace-plot" class="button primary">Plot Race Trace</button>
+        </div>
+        <div class="chart">
+          <h2 class="chart-title"></h2>
+          <p class="placeholder">Pick a session and drivers, then click <strong>Plot Race Trace</strong>.</p>
+          <div class="plot" hidden></div>
+        </div>
+      </div>
+
+      <!-- Tyre Strategy -->
+      <div class="panel" id="panel-tyres" role="tabpanel" aria-labelledby="tab-tyres" hidden>
+        <div class="controls">
+          <label class="check"><input type="checkbox" id="tyre-exclude-pit" checked> Exclude pit out laps</label>
+          <label class="check"><input type="checkbox" id="tyre-exclude-outliers" checked> Exclude outlier laps</label>
+          <label class="field inline">
+            <span>Off median by ≥</span>
+            <span class="with-suffix"><input type="number" id="tyre-outlier-percent" min="1" max="100" step="1" value="10">%</span>
+          </label>
+          <label class="check"><input type="checkbox" id="tyre-invert"> Faster laps plotted higher</label>
+          <button type="button" id="tyre-plot" class="button primary">Plot Lap Times</button>
+        </div>
+        <div class="chart">
+          <h2 class="chart-title"></h2>
+          <ul id="tyre-legend" class="tyre-legend" aria-label="Tyre compounds" hidden></ul>
+          <p class="placeholder">Each ticked driver's lap times on their own graph, with the background shaded by the tyre compound in use.</p>
+          <div class="plot" hidden></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="status" class="status" role="status" hidden>
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="status-text"></span>
+  </div>
+
+  <footer class="app-footer">
+    Data from the free <a href="https://openf1.org">OpenF1 API</a>. Unofficial and not associated with Formula 1.
+  </footer>
+</body>
+</html>

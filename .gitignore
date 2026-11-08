@@ -1,7 +1,2 @@
-venv/
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
 .DS_Store
-.fastf1_cache/
+node_modules/

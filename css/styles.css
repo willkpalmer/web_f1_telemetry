@@ -1,0 +1,598 @@
+:root {
+  color-scheme: light;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f0f1f4;
+  --border: #d9dce2;
+  --text: #1c1f24;
+  --text-muted: #5f6672;
+  --accent: #c8302a;
+  --accent-hover: #a82620;
+  --accent-text: #ffffff;
+  --focus: #2b6cd4;
+  --error-bg: #fdecea;
+  --error-text: #8a1c14;
+  --info-bg: #e8f0fc;
+  --info-text: #1d3f78;
+  --chart-bg: #ffffff;
+  --chart-grid: #e2e5ea;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121418;
+    --surface: #1b1e24;
+    --surface-2: #242830;
+    --border: #343a44;
+    --text: #e7e9ed;
+    --text-muted: #9aa1ad;
+    --accent: #cf3b33;
+    --accent-hover: #e0483f;
+    --focus: #6ea0f0;
+    --error-bg: #3a1c1a;
+    --error-text: #f6b3ac;
+    --info-bg: #1a2a44;
+    --info-text: #b7cdf3;
+    --chart-bg: #1b1e24;
+    --chart-grid: #333944;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121418;
+  --surface: #1b1e24;
+  --surface-2: #242830;
+  --border: #343a44;
+  --text: #e7e9ed;
+  --text-muted: #9aa1ad;
+  --accent: #cf3b33;
+  --accent-hover: #e0483f;
+  --focus: #6ea0f0;
+  --error-bg: #3a1c1a;
+  --error-text: #f6b3ac;
+  --info-bg: #1a2a44;
+  --info-text: #b7cdf3;
+  --chart-bg: #1b1e24;
+  --chart-grid: #333944;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+/* ---- Header / footer -------------------------------------------------- */
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding: 16px 24px 8px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+
+.app-header p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.app-footer {
+  padding: 8px 24px 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* ---- Layout ------------------------------------------------------------ */
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 16px;
+  padding: 8px 24px 16px;
+  align-items: start;
+}
+
+.sidebar,
+.workspace {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+}
+
+.workspace {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ---- Form controls ----------------------------------------------------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field > span:first-child,
+legend {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.field.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+select,
+input[type="number"] {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-height: 34px;
+  max-width: 100%;
+}
+
+input[type="number"] {
+  width: 4.5em;
+}
+
+input[type="number"]:disabled {
+  opacity: 0.5;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.with-suffix {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.button {
+  font: inherit;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 7px 16px;
+  min-height: 34px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.button.secondary {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-muted);
+  max-width: 60ch;
+}
+
+/* ---- Driver list ------------------------------------------------------- */
+
+.drivers {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.driver-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  min-height: 120px;
+  flex: 1;
+}
+
+.team-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 6px 2px;
+}
+
+.team-heading:first-child {
+  padding-top: 2px;
+}
+
+.driver-empty {
+  padding: 8px 6px;
+  color: var(--text-muted);
+}
+
+.driver {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.driver:hover {
+  background: var(--surface);
+}
+
+.driver:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.acronym {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.2em;
+}
+
+.full-name {
+  color: var(--text-muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drivers-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+/* ---- Tabs -------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+[role="tab"] {
+  font: inherit;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  padding: 8px 14px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+[role="tab"]:hover {
+  color: var(--text);
+}
+
+[role="tab"][aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* ---- Panels ------------------------------------------------------------ */
+
+.panel {
+  padding: 16px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.per-driver-laps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.per-driver-laps .field > span:first-child {
+  min-width: 2.6em;
+}
+
+.channels {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+
+.channels legend {
+  float: left;
+  margin: 0 4px 0 0;
+}
+
+.channel-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.chart {
+  padding-top: 12px;
+  min-height: 420px;
+}
+
+.chart-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chart-title:empty {
+  display: none;
+}
+
+.placeholder {
+  margin: 0;
+  display: grid;
+  place-items: center;
+  min-height: 380px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.plot {
+  width: 100%;
+  min-height: 460px;
+}
+
+/* ---- Tyre legend ------------------------------------------------------- */
+
+.tyre-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 4px 0 8px;
+  padding: 0;
+  font-size: 13px;
+}
+
+.tyre-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tyre-swatch {
+  width: 18px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid #999999;
+}
+
+.tyre-unknown {
+  background: repeating-linear-gradient(135deg, #b0b0b0 0 1.5px, transparent 1.5px 5px);
+}
+
+.tyre-excluded {
+  background: var(--chart-bg);
+}
+
+/* ---- Messages and status ----------------------------------------------- */
+
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.message[data-kind="error"] {
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+.message span {
+  flex: 1;
+}
+
+.message-close {
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.status {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 13px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.2);
+  z-index: 10;
+}
+
+.status span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+/* ---- Small screens ----------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 8px 16px 16px;
+  }
+
+  .app-header,
+  .app-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .sidebar {
+    position: static;
+    max-height: none;
+  }
+
+  .driver-list {
+    max-height: 320px;
+  }
+
+  .panel {
+    padding: 12px;
+  }
+
+  .message {
+    margin: 12px 12px 0;
+  }
+}
