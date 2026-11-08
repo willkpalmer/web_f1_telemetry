@@ -31,9 +31,13 @@ Once Pages is enabled (see below), the app is at
      corner for corner) rather than by elapsed time. OpenF1 has no
      distance channel, so it's derived by integrating each car's speed
      over time. When corner data is available for the circuit, the x-axis
-     shows corner numbers instead of raw metres. With per-driver laps,
-     each driver's lap picker lists every lap's time (marking their
-     fastest lap and any pit out-lap) to help you choose.
+     shows turn numbers instead of raw metres. The three sectors are
+     overlaid too (sector 2 lightly shaded, with S1/S2/S3 labels at the
+     top); OpenF1 doesn't publish where the sector lines are, so they're
+     placed where the plotted cars' own sector times say they crossed
+     them. With per-driver laps, each driver's lap picker lists every
+     lap's time (marking their fastest lap and any pit out-lap) to help
+     you choose.
      The **Time delta** panel (on by default) is a race trace within the
      lap: the **Delta reference** driver (the first one you ticked, unless
      you pick another) sits flat at zero, and every other car is drawn

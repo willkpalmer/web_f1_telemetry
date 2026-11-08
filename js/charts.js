@@ -220,6 +220,27 @@ function describeDelta(delta) {
   return delta > 0 ? `+${delta.toFixed(3)} s behind` : `${(-delta).toFixed(3)} s ahead`;
 }
 
+/**
+ * Where the two sector boundaries fall, as fractions of the lap (0-1).
+ * OpenF1 has no sector-position data, only each lap's sector times, so
+ * each car's boundary is found by looking up how far round its lap it was
+ * when its sector 1 (and sector 1 + 2) time had elapsed; the cars'
+ * estimates are then averaged. Null if no car has usable sector times.
+ */
+function sectorFractions(series) {
+  const estimates = [];
+  for (const { lap, timeline } of series) {
+    if (!timeline) continue;
+    const s1 = lap.duration_sector_1;
+    const s2 = lap.duration_sector_2;
+    if (!(s1 > 0 && s2 > 0 && s1 + s2 < lap.lap_duration)) continue;
+    estimates.push([s1, s1 + s2].map((time) => interpolate(timeline.time, timeline.fraction, time)));
+  }
+  if (!estimates.length) return null;
+  const mean = (k) => estimates.reduce((sum, e) => sum + e[k], 0) / estimates.length;
+  return [mean(0), mean(1)];
+}
+
 export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corners, referenceNumber }) {
   const t = theme();
   const colours = driverPlotColours(drivers);
@@ -230,8 +251,9 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
     if (!rows || !rows.length) continue;
     const sorted = [...rows].sort((a, b) => parseIsoMs(a.date) - parseIsoMs(b.date));
     const distance = cumulativeDistance(sorted);
-    const timeline = lapTimeline(sorted, distance, lapByDriver.get(driver.driver_number));
-    series.push({ driver, rows: sorted, distance, timeline });
+    const lap = lapByDriver.get(driver.driver_number);
+    const timeline = lapTimeline(sorted, distance, lap);
+    series.push({ driver, lap, rows: sorted, distance, timeline });
   }
   if (!series.length) return null;
 
@@ -308,7 +330,7 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
     }
   });
 
-  // Corner positions are a fraction of the lap, so they scale to this
+  // Turn positions are a fraction of the lap, so they scale to this
   // specific lap's own integrated distance automatically.
   const hasCorners = corners.length > 0 && lapDistance > 0;
   const cornerDistances = hasCorners ? corners.map((c) => c.fraction * lapDistance) : [];
@@ -316,7 +338,7 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
     anchor: axisNames(channels.length - 1).trace,
     range: [0, lapDistance],
     hoverformat: ",.0f",
-    title: { text: hasCorners ? "Corner (hover shows metres into lap)" : "Distance into lap (m)" },
+    title: { text: hasCorners ? "Turn (hover shows metres into lap)" : "Distance into lap (m)" },
     ...(hasCorners
       ? {
           tickmode: "array",
@@ -339,6 +361,51 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
     line: { color: t.muted, width: 1, dash: "dot" },
     opacity: 0.45,
   }));
+
+  // Sectors: sector 2 is lightly shaded, with a solid line at each
+  // boundary and an S1/S2/S3 label at the top of each sector.
+  const sectors = lapDistance > 0 ? sectorFractions(series) : null;
+  if (sectors) {
+    const [b1, b2] = sectors.map((f) => f * lapDistance);
+    layout.shapes.push(
+      {
+        type: "rect",
+        xref: "x",
+        yref: "paper",
+        x0: b1,
+        x1: b2,
+        y0: 0,
+        y1: 1,
+        layer: "below",
+        line: { width: 0 },
+        fillcolor: t.grid,
+        opacity: 0.35,
+      },
+      ...[b1, b2].map((x) => ({
+        type: "line",
+        xref: "x",
+        yref: "paper",
+        x0: x,
+        x1: x,
+        y0: 0,
+        y1: 1,
+        layer: "below",
+        line: { color: t.muted, width: 1.5 },
+        opacity: 0.8,
+      }))
+    );
+    const bounds = [0, b1, b2, lapDistance];
+    layout.annotations = [1, 2, 3].map((n) => ({
+      text: `S${n}`,
+      xref: "x",
+      yref: "paper",
+      x: (bounds[n - 1] + bounds[n]) / 2,
+      y: 1,
+      yanchor: "top",
+      showarrow: false,
+      font: { size: 11, color: t.muted },
+    }));
+  }
   layout.height = 90 + channels.length * 170;
 
   return { data, layout };
