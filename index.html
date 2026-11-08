@@ -33,14 +33,14 @@
         <select id="session"><option value="">Select session</option></select>
       </label>
 
-      <fieldset class="drivers">
-        <legend>Drivers</legend>
+      <div class="drivers" role="group" aria-labelledby="drivers-label">
+        <span class="group-label" id="drivers-label">Drivers</span>
         <ul id="driver-list" class="driver-list"></ul>
         <div class="drivers-footer">
           <span id="driver-count" class="muted"></span>
           <button type="button" id="clear-drivers" class="button secondary">Clear</button>
         </div>
-      </fieldset>
+      </div>
     </aside>
 
     <section class="workspace">
@@ -69,7 +69,7 @@
         </div>
         <div class="chart">
           <h2 class="chart-title"></h2>
-          <p class="placeholder">Pick a session and drivers, then click <strong>Plot</strong> to graph the chosen metric lap by lap.</p>
+          <p class="placeholder"><span>Pick a session and drivers, then click <strong>Plot</strong> to graph the chosen metric lap by lap.</span></p>
           <div class="plot" hidden></div>
         </div>
       </div>
@@ -95,7 +95,7 @@
         </div>
         <div class="chart">
           <h2 class="chart-title"></h2>
-          <p class="placeholder">Compare cars through a single lap, aligned by distance travelled so you can read them corner for corner. The time-delta panel shows how far each car is ahead of or behind the reference driver at every point of the lap. OpenF1 has no steering-angle channel, so that one can't be shown.</p>
+          <p class="placeholder"><span>Compare cars through a single lap, aligned by distance travelled so you can read them corner for corner. The time-delta panel shows how far each car is ahead of or behind the reference driver at every point of the lap. OpenF1 has no steering-angle channel, so that one can't be shown.</span></p>
           <div class="plot" hidden></div>
         </div>
       </div>
@@ -108,7 +108,7 @@
         </div>
         <div class="chart">
           <h2 class="chart-title"></h2>
-          <p class="placeholder">Pick a session and drivers, then click <strong>Plot Race Trace</strong>.</p>
+          <p class="placeholder"><span>Pick a session and drivers, then click <strong>Plot Race Trace</strong>.</span></p>
           <div class="plot" hidden></div>
         </div>
       </div>
@@ -128,7 +128,7 @@
         <div class="chart">
           <h2 class="chart-title"></h2>
           <ul id="tyre-legend" class="tyre-legend" aria-label="Tyre compounds" hidden></ul>
-          <p class="placeholder">Each ticked driver's lap times on their own graph, with the background shaded by the tyre compound in use.</p>
+          <p class="placeholder"><span>Each ticked driver's lap times on their own graph, with the background shaded by the tyre compound in use.</span></p>
           <div class="plot" hidden></div>
         </div>
       </div>

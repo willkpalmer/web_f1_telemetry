@@ -160,6 +160,7 @@ a {
 }
 
 .field > span:first-child,
+.group-label,
 legend {
   font-weight: 600;
   font-size: 13px;
@@ -262,11 +263,14 @@ legend {
 
 /* ---- Driver list ------------------------------------------------------- */
 
+/* The list takes whatever height the sidebar has left and scrolls inside
+   it, however many drivers the season has. */
 .drivers {
   display: flex;
   flex-direction: column;
+  gap: 4px;
   min-height: 0;
-  flex: 1;
+  flex: 1 1 auto;
 }
 
 .driver-list {
@@ -277,8 +281,8 @@ legend {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-2);
-  min-height: 120px;
-  flex: 1;
+  min-height: 160px;
+  flex: 1 1 auto;
 }
 
 .team-heading {
