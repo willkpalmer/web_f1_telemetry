@@ -34,6 +34,9 @@ export const TELEMETRY_CHANNELS = {
 // Pseudo-channel for the telemetry tab's time-delta panel: how far each
 // car is ahead of / behind a reference car at each point of the lap.
 export const DELTA_CHANNEL = "Delta";
+// Pseudo-channel for the distance-gap panel: how many metres each car is
+// ahead of / behind the reference car at the same moment into the lap.
+export const GAP_CHANNEL = "Gap";
 
 export const TYRE_COMPOUNDS = {
   SOFT: { colour: "#f7a8b6", label: "Soft" },
@@ -214,6 +217,26 @@ function interpolate(xs, ys, x) {
 
 const DELTA_SAMPLES = 600;
 
+/**
+ * How far round its lap (as a fraction) a car is `elapsed` seconds after
+ * its lap started. Past the end of its own lap the car keeps going at the
+ * rate it finished at (fractions above 1), so a faster car keeps pulling
+ * away from a slower reference instead of stopping at the line.
+ */
+function fractionAtTime(timeline, elapsed) {
+  const { time, fraction } = timeline;
+  const end = time[time.length - 1];
+  if (elapsed <= end) return interpolate(time, fraction, elapsed);
+  const from = interpolate(time, fraction, end - 1);
+  return 1 + (elapsed - end) * (1 - from);
+}
+
+/** Formats a signed gap in metres: "12 m behind", "8 m ahead", "level". */
+function describeGap(metres) {
+  if (Math.abs(metres) < 0.5) return "level";
+  return metres > 0 ? `${metres.toFixed(0)} m ahead` : `${(-metres).toFixed(0)} m behind`;
+}
+
 /** Formats a signed delta: "+0.123 s behind", "0.050 s ahead", "level". */
 function describeDelta(delta) {
   if (Math.abs(delta) < 0.0005) return "level";
@@ -297,6 +320,45 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
           // and a slower car sinks below it.
           y: deltas.map((d) => -d),
           customdata: deltas.map((d) => (isRef ? "reference" : describeDelta(d))),
+          xaxis: "x",
+          yaxis: names.trace,
+          line: { color: colours.get(driver.driver_number), width: isRef ? 1 : 1.75, dash: isRef ? "dash" : "solid" },
+          hovertemplate: `${name}: %{customdata}<extra></extra>`,
+        });
+      }
+      return;
+    }
+
+    if (channel === GAP_CHANNEL) {
+      const refName = reference ? driverLabel(reference.driver) : "–";
+      layout[names.layout] = axis(t, {
+        domain: domains[i],
+        title: { text: `Gap to ${refName} (m)<br><span style="font-size:10px">ahead ↑ · behind ↓</span>`, font: { size: 11 } },
+        zeroline: true,
+        zerolinecolor: t.muted,
+        zerolinewidth: 1,
+      });
+      if (!reference) return;
+      // Sampled at moments through the reference's lap: at each one, the
+      // gap is how much further round the lap each car is than the
+      // reference, plotted where the reference is on track.
+      const refTimeline = reference.timeline;
+      const refDuration = refTimeline.time[refTimeline.time.length - 1];
+      const times = Array.from({ length: DELTA_SAMPLES + 1 }, (_, k) => (k / DELTA_SAMPLES) * refDuration);
+      const refFractions = times.map((time) => fractionAtTime(refTimeline, time));
+      for (const { driver, timeline } of timed) {
+        const name = driverLabel(driver);
+        const isRef = driver === reference.driver;
+        const gaps = times.map((time, k) => (fractionAtTime(timeline, time) - refFractions[k]) * lapDistance);
+        data.push({
+          type: "scatter",
+          mode: "lines",
+          name,
+          legendgroup: String(driver.driver_number),
+          showlegend: i === 0,
+          x: refFractions.map((f) => f * lapDistance),
+          y: gaps,
+          customdata: gaps.map((g) => (isRef ? "reference" : describeGap(g))),
           xaxis: "x",
           yaxis: names.trace,
           line: { color: colours.get(driver.driver_number), width: isRef ? 1 : 1.75, dash: isRef ? "dash" : "solid" },

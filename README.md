@@ -45,7 +45,12 @@ Once Pages is enabled (see below), the app is at
      it's behind, ending at the difference in their lap times. Each car's
      position is taken as a fraction of its own integrated lap distance,
      so small differences in the distance estimate between cars don't
-     build up into a fake gap. OpenF1's free tier has no
+     build up into a fake gap. The **Distance gap** panel shows the same
+     comparison in metres: at each moment of the reference driver's lap,
+     how far further round the lap (ahead, above zero) or not as far
+     (behind, below zero) each other car is, as if they'd started the lap
+     side by side. It's a lap-against-lap comparison, not the real gap
+     between the cars on track. OpenF1's free tier has no
      steering-angle channel, so that's the one thing you can't compare.
    - **Race Trace** — click **Plot Race Trace** to see each ticked
      driver's gap to the race leader, lap by lap (leader flat at zero,

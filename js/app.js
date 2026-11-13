@@ -786,14 +786,15 @@ function initTabs() {
 
 function populateStaticControls() {
   setOptions(els.metric, null, Object.keys(charts.METRICS).map((m) => ({ value: m, label: m })));
-  for (const name of [charts.DELTA_CHANNEL, ...Object.keys(charts.TELEMETRY_CHANNELS)]) {
+  const pseudoLabels = { [charts.DELTA_CHANNEL]: "Time delta", [charts.GAP_CHANNEL]: "Distance gap" };
+  for (const name of [charts.DELTA_CHANNEL, charts.GAP_CHANNEL, ...Object.keys(charts.TELEMETRY_CHANNELS)]) {
     const label = document.createElement("label");
     label.className = "check";
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = name;
     box.checked = DEFAULT_CHANNELS.includes(name);
-    label.append(box, ` ${name === charts.DELTA_CHANNEL ? "Time delta" : name}`);
+    label.append(box, ` ${pseudoLabels[name] || name}`);
     els.channels.append(label);
   }
 }
@@ -820,9 +821,12 @@ function init() {
   els.driverList.addEventListener("change", onDriverToggled);
   els.clearDrivers.addEventListener("click", clearDrivers);
   els.linkLaps.addEventListener("change", onLinkLapsToggled);
-  const deltaBox = els.channels.querySelector(`input[value="${charts.DELTA_CHANNEL}"]`);
-  const syncDeltaRef = () => (els.deltaRefField.hidden = !deltaBox.checked);
-  deltaBox.addEventListener("change", syncDeltaRef);
+  // The reference picker applies to both the time-delta and distance-gap panels.
+  const refBoxes = [charts.DELTA_CHANNEL, charts.GAP_CHANNEL].map((name) =>
+    els.channels.querySelector(`input[value="${name}"]`)
+  );
+  const syncDeltaRef = () => (els.deltaRefField.hidden = !refBoxes.some((box) => box.checked));
+  for (const box of refBoxes) box.addEventListener("change", syncDeltaRef);
   syncDeltaRef();
   els.tyreExcludeOutliers.addEventListener("change", () => {
     els.tyreOutlierPercent.disabled = !els.tyreExcludeOutliers.checked;
