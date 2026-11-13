@@ -330,6 +330,7 @@ function updateDriverCount() {
   }
   els.clearDrivers.disabled = count === 0;
   renderDeltaReference();
+  labelSharedLapPicker();
 }
 
 /** The time-delta reference picker lists the ticked drivers in the order
@@ -412,8 +413,35 @@ function populateLapPicker(laps) {
     numbers.map((n) => ({ value: n, label: `Lap ${n}` }))
   );
   if (numbers.length) els.lap.value = String(numbers[0]);
+  labelSharedLapPicker();
   if (!els.linkLaps.checked) renderPerDriverLaps();
   updateButtons();
+}
+
+/**
+ * In qualifying, adds each ticked driver's track start time to the shared
+ * lap picker's options, e.g. "Lap 5 · 15:11:27" for one driver or
+ * "Lap 5 · NOR 15:11:27 · PIA 15:11:17" for several (a lap number starts
+ * at a different time for each driver). Plain "Lap 5" otherwise.
+ * Relabels in place, so the selected lap is kept.
+ */
+function labelSharedLapPicker() {
+  const lapStart = lapStartFormatter();
+  const drivers = lapStart && state.laps ? checkedDrivers() : [];
+  const startByKey = new Map();
+  for (const lap of state.laps || []) {
+    if (drivers.length && isTimedLap(lap)) startByKey.set(`${lap.driver_number}:${lap.lap_number}`, lap);
+  }
+  for (const option of els.lap.options) {
+    if (option.value === "") continue;
+    const parts = [];
+    for (const driver of drivers) {
+      const lap = startByKey.get(`${driver.driver_number}:${option.value}`);
+      const time = lap && lapStart(lap);
+      if (time) parts.push(drivers.length > 1 ? `${driverLabel(driver)} ${time}` : time);
+    }
+    option.textContent = [`Lap ${option.value}`, ...parts].join(" · ");
+  }
 }
 
 function onLinkLapsToggled() {
