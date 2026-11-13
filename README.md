@@ -37,7 +37,10 @@ Once Pages is enabled (see below), the app is at
      placed where the plotted cars' own sector times say they crossed
      them. With per-driver laps, each driver's lap picker lists every
      lap's time (marking their fastest lap and any pit out-lap) to help
-     you choose.
+     you choose. In qualifying sessions (including Sprint Qualifying) it
+     also shows the local track time each lap started, which makes it
+     easy to tell Q1, Q2 and Q3 runs apart; the same start time appears
+     when you hover a lap on the Lap Summary and Tyre Strategy charts.
      The **Time delta** panel (on by default) is a race trace within the
      lap: the **Delta reference** driver (the first one you ticked, unless
      you pick another) sits flat at zero, and every other car is drawn

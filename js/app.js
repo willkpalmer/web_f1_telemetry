@@ -10,7 +10,7 @@ import * as api from "./api.js";
 import * as charts from "./charts.js";
 import { getCorners } from "./circuitInfo.js";
 import { compareKeys, teamSortKey } from "./teamOrder.js";
-import { driverLabel, formatIsoUtc, formatSeconds, parseIsoMs, teamColour } from "./util.js";
+import { driverLabel, formatIsoUtc, formatSeconds, formatTrackTime, parseIsoMs, teamColour } from "./util.js";
 
 const FIRST_HISTORICAL_YEAR = 2023;
 
@@ -64,6 +64,7 @@ const state = {
   meetingKey: null,
   sessionKey: null,
   meetingsByKey: new Map(),
+  sessionsByKey: new Map(), // current Grand Prix's sessions
   drivers: [], // current session's drivers, in display order
   driversLoaded: false,
   checked: new Set(), // ticked driver_numbers
@@ -205,6 +206,7 @@ async function onMeetingChanged() {
 }
 
 function populateSessions(sessions, preferredSessionKey) {
+  state.sessionsByKey = new Map(sessions.map((s) => [s.session_key, s]));
   const sorted = [...sessions].sort((a, b) => (a.date_start || "").localeCompare(b.date_start || ""));
   setOptions(
     els.session,
@@ -373,16 +375,31 @@ function timedLapsForDriver(laps, driverNumber) {
     .sort((a, b) => a.lap_number - b.lap_number);
 }
 
+/**
+ * For qualifying sessions (including Sprint Qualifying/Shootout), a
+ * function giving the local track time a lap started, e.g. "15:04:12" -
+ * handy for telling Q1/Q2/Q3 runs apart. Null for other sessions.
+ */
+function lapStartFormatter() {
+  const session = state.sessionsByKey.get(state.sessionKey);
+  if (session?.session_type !== "Qualifying") return null;
+  return (lap) => (lap.date_start ? formatTrackTime(lap.date_start, session.gmt_offset) : null);
+}
+
 /** Per-driver picker options, labelled with each lap's time, e.g.
- * "Lap 12 · 1:32.456 (fastest)". */
+ * "Lap 12 · 1:32.456 (fastest)", and in qualifying its start time, e.g.
+ * "Lap 12 · 15:04:12 · 1:32.456 (fastest)". */
 function lapOptions(driverLaps) {
+  const lapStart = lapStartFormatter();
   const fastest = Math.min(...driverLaps.map((lap) => lap.lap_duration));
   return driverLaps.map((lap) => {
     const notes = [];
     if (lap.lap_duration === fastest) notes.push("fastest");
     if (lap.is_pit_out_lap) notes.push("out lap");
     const suffix = notes.length ? ` (${notes.join(", ")})` : "";
-    return { value: lap.lap_number, label: `Lap ${lap.lap_number} · ${formatSeconds(lap.lap_duration)}${suffix}` };
+    const started = lapStart?.(lap);
+    const when = started ? ` · ${started}` : "";
+    return { value: lap.lap_number, label: `Lap ${lap.lap_number}${when} · ${formatSeconds(lap.lap_duration)}${suffix}` };
   });
 }
 
@@ -640,6 +657,7 @@ function plotSummary() {
       metric,
       excludePitLaps: els.summaryExcludePit.checked,
       invert: els.summaryInvert.checked,
+      lapStart: lapStartFormatter(),
     };
     const title = chartTitle(metric);
     const laps = await run("Loading lap data…", api.getLaps(sessionKey));
@@ -722,6 +740,7 @@ function plotTyres() {
       excludeOutliers: els.tyreExcludeOutliers.checked,
       outlierThreshold: percent / 100,
       invert: els.tyreInvert.checked,
+      lapStart: lapStartFormatter(),
     };
     const title = chartTitle("Lap Times by Tyre");
     const result = await run(

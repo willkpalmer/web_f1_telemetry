@@ -103,7 +103,13 @@ const byLapNumber = (a, b) => (a.lap_number ?? 0) - (b.lap_number ?? 0);
 
 // ---- Lap Summary -----------------------------------------------------------
 
-export function lapSummary({ laps, drivers, metric, excludePitLaps, invert }) {
+/** Hover suffix with the lap's track start time, if `lapStart` gives one. */
+const startedSuffix = (lapStart, lap) => {
+  const time = lapStart?.(lap);
+  return time ? `<br>Started ${time} track time` : "";
+};
+
+export function lapSummary({ laps, drivers, metric, excludePitLaps, invert, lapStart }) {
   const { field, label } = METRICS[metric];
   const isTime = field !== "st_speed";
   const t = theme();
@@ -125,7 +131,9 @@ export function lapSummary({ laps, drivers, metric, excludePitLaps, invert }) {
       name,
       x: points.map((lap) => lap.lap_number),
       y: points.map((lap) => lap[field]),
-      customdata: points.map((lap) => (isTime ? formatSeconds(lap[field]) : `${lap[field]} km/h`)),
+      customdata: points.map(
+        (lap) => (isTime ? formatSeconds(lap[field]) : `${lap[field]} km/h`) + startedSuffix(lapStart, lap)
+      ),
       line: { color: colours.get(driver.driver_number), width: 2 },
       marker: { size: 5 },
       hovertemplate: `<b>${name}</b> · Lap %{x}<br>%{customdata}<extra></extra>`,
@@ -583,7 +591,7 @@ function withoutOutliers(laps, threshold) {
   return laps.filter((lap) => Math.abs(lap.lap_duration - mid) < threshold * mid);
 }
 
-export function tyreStrategy({ laps, stints, drivers, excludePitLaps, excludeOutliers, outlierThreshold, invert }) {
+export function tyreStrategy({ laps, stints, drivers, excludePitLaps, excludeOutliers, outlierThreshold, invert, lapStart }) {
   const t = theme();
 
   // Work out each driver's laps first, so drivers with nothing to show
@@ -667,7 +675,10 @@ export function tyreStrategy({ laps, stints, drivers, excludePitLaps, excludeOut
       x.push(lap.lap_number);
       y.push(lap.lap_duration);
       const compound = compoundForLap(driverStints, lap.lap_number);
-      custom.push(`${formatSeconds(lap.lap_duration)} · ${TYRE_COMPOUNDS[compound]?.label ?? "Unknown tyre"}`);
+      custom.push(
+        `${formatSeconds(lap.lap_duration)} · ${TYRE_COMPOUNDS[compound]?.label ?? "Unknown tyre"}` +
+          startedSuffix(lapStart, lap)
+      );
     });
     // A white halo keeps the driver-coloured line readable on any
     // compound's shading (e.g. a red Ferrari line on Soft).

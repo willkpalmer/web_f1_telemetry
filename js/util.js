@@ -21,6 +21,19 @@ export function formatIsoUtc(ms) {
   return new Date(ms).toISOString().slice(0, 23);
 }
 
+/**
+ * Local time of day at the track ("15:04:12") for an OpenF1 UTC
+ * timestamp, given the session's gmt_offset (e.g. "02:00:00" or
+ * "-04:00:00"). Null if either is missing.
+ */
+export function formatTrackTime(iso, gmtOffset) {
+  const ms = parseIsoMs(iso);
+  const match = /^(-)?(\d{1,2}):(\d{2})/.exec(gmtOffset || "");
+  if (!Number.isFinite(ms) || !match) return null;
+  const offsetMs = (match[1] ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3])) * 60000;
+  return new Date(ms + offsetMs).toISOString().slice(11, 19);
+}
+
 /** 92.456 -> "1:32.456"; 31.2 -> "31.200 s" */
 export function formatSeconds(seconds) {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return "–";
