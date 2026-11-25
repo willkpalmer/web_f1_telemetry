@@ -305,7 +305,7 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
       const refName = reference ? driverLabel(reference.driver) : "–";
       layout[names.layout] = axis(t, {
         domain: domains[i],
-        title: { text: `Gap to ${refName} (s)<br><span style="font-size:10px">ahead ↑ · behind ↓</span>`, font: { size: 11 } },
+        title: { text: `Gap to ${refName} (s)<br><span style="font-size:10px">behind ↑ · ahead ↓</span>`, font: { size: 11 } },
         zeroline: true,
         zerolinecolor: t.muted,
         zerolinewidth: 1,
@@ -324,9 +324,9 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
           legendgroup: String(driver.driver_number),
           showlegend: i === 0,
           x: fractions.map((f) => f * lapDistance),
-          // Negated, like the Race Trace: the reference sits flat at zero
-          // and a slower car sinks below it.
-          y: deltas.map((d) => -d),
+          // Seconds behind the reference: the reference sits flat at zero,
+          // a car that's behind is above it and one that's ahead is below.
+          y: deltas,
           customdata: deltas.map((d) => (isRef ? "reference" : describeDelta(d))),
           xaxis: "x",
           yaxis: names.trace,
@@ -341,7 +341,7 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
       const refName = reference ? driverLabel(reference.driver) : "–";
       layout[names.layout] = axis(t, {
         domain: domains[i],
-        title: { text: `Gap to ${refName} (m)<br><span style="font-size:10px">ahead ↑ · behind ↓</span>`, font: { size: 11 } },
+        title: { text: `Gap to ${refName} (m)<br><span style="font-size:10px">behind ↑ · ahead ↓</span>`, font: { size: 11 } },
         zeroline: true,
         zerolinecolor: t.muted,
         zerolinewidth: 1,
@@ -365,7 +365,8 @@ export function telemetry({ drivers, dataByDriver, lapByDriver, channels, corner
           legendgroup: String(driver.driver_number),
           showlegend: i === 0,
           x: refFractions.map((f) => f * lapDistance),
-          y: gaps,
+          // Same sign as the time delta: behind above zero, ahead below.
+          y: gaps.map((g) => -g),
           customdata: gaps.map((g) => (isRef ? "reference" : describeGap(g))),
           xaxis: "x",
           yaxis: names.trace,

@@ -47,14 +47,14 @@ Once Pages is enabled (see below), the app is at
      The **Time delta** panel (on by default) is a race trace within the
      lap: the **Delta reference** driver (the first one you ticked, unless
      you pick another) sits flat at zero, and every other car is drawn
-     above it where it's ahead at that point of the lap and below where
+     below it where it's ahead at that point of the lap and above where
      it's behind, ending at the difference in their lap times. Each car's
      position is taken as a fraction of its own integrated lap distance,
      so small differences in the distance estimate between cars don't
      build up into a fake gap. The **Distance gap** panel shows the same
      comparison in metres: at each moment of the reference driver's lap,
-     how far further round the lap (ahead, above zero) or not as far
-     (behind, below zero) each other car is, as if they'd started the lap
+     how far further round the lap (ahead, below zero) or not as far
+     (behind, above zero) each other car is, as if they'd started the lap
      side by side. It's a lap-against-lap comparison, not the real gap
      between the cars on track. OpenF1's free tier has no
      steering-angle channel, so that's the one thing you can't compare.
